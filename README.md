@@ -8,7 +8,7 @@ Authors: [@jcken95](github.com/jcken95), [@DrAuxetic](github.com/DrAuxetic), [@o
 
 ## Code content
 
-This is a one-way push of the relevant contents of the operational repository used to deliver forecasts within UKHSA in winter 2023/24.
+This is a one-way push of the relevant contents of the operational repository used to deliver forecasts within UKHSA in winter 2024/25.
 
 The repository represents the state of code at the end of the 2024/25 season.
 
