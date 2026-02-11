@@ -31,7 +31,7 @@ We have open sourced this code to support the transparency of the project with t
  * Code used to generate analysis, figures and table for the paper are in `publication`   
  * Common functions across models are accessed via a box module for this repository, as well as common functions used across the team (e.g. for data access).
 
-### Changes between 2023/24 & 2024/25
+### Changes between 2024/25 & 2025/26
 
 Over summer 2025 there were minor changes to the code base. The primary changes were:
 
