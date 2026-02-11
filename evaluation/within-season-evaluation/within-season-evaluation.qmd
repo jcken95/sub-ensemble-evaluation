@@ -1,0 +1,599 @@
+---
+title: Within-season model assessment
+author: Pancasting workstream | infectious disease modelling team
+format:
+  ukhsa-html: default
+date: last-modified
+echo: false
+message: false
+warning: false
+---
+
+::: {.callout-warning}
+OFFICIAL SENSITIVE
+
+This product is OFF-SEN and should not be shared wider than its distribution without express permission from AIA
+:::
+
+```{r}
+#| label: box-setup
+#| message: false
+#| echo: false
+#| warning: false
+
+# all print options manually false
+# chunk checks if you're in an R Project, and if so, sets the box path
+options("box.path" = unique(c(
+  getOption("box.path"),
+  tryCatch(
+    rprojroot::find_rstudio_root_file("src", "R"),
+    error = function(e) NULL
+  )
+)))
+```
+
+```{r}
+#| label: scoringutils-version
+
+# TODO: remove chunk when we are ready to move to scoring utils 2.0.0 #740
+# Would prefer to build new products with the new version of {scoringutils}
+
+
+if (packageVersion("scoringutils") < "2.0.0") {
+  cli::cli_warn(c(
+    "You do not have the correct version of scoringutils needed to run this code.",
+    "The newest version is being temporarily installed to your current session and will not be saved."
+  ))
+
+  # "Development library" for somewhat temporary installations
+  dev_lib <- fs::dir_create("~/dev_lib/")
+  # install development version
+  remotes::install_cran("scoringutils", lib = dev_lib)
+  # add development area to your paths
+  .libPaths(c(dev_lib, .libPaths()))
+}
+```
+
+```{r}
+#| label: dependency-setup
+box::use(
+  box / deps_,
+  box / redshift,
+  prj / projection_plots
+)
+
+deps_$need(
+  "aws.s3",
+  "dplyr",
+  "ggplot2",
+  "here",
+  "scoringutils >= 2.0.0",
+  "stringr",
+  "tibble",
+  "tidyr"
+)
+
+source(here::here("evaluation/helpers.R"))
+```
+
+```{r}
+#| label: config
+
+config_paths <- list(
+  "influenza_admissions" = here::here("influenza", "models", "admissions", "influenza_admissions_config.yaml"),
+  "covid_admissions" = here::here("covid", "models", "admissions", "covid_admissions_config.yaml"),
+  "rsv_admissions" = here::here("rsv", "models", "admissions", "rsv_admissions_config.yaml")
+)
+
+influenza_admissions_config <- yaml::read_yaml(config_paths$influenza_admissions)$default
+covid_admissions_config <- yaml::read_yaml(config_paths$covid_admissions)$default
+rsv_admissions_config <- yaml::read_yaml(config_paths$rsv_admissions)$default
+```
+
+
+```{r}
+#| label: ggplot2-theme
+ggplot2::theme_set(projection_plots$theme_pancasts())
+```
+
+```{r}
+#| label: read-pancasts
+rs <- redshift$data_model("REDACTED")
+
+pancasts <- rs$REDACTED |>
+  dplyr::filter(
+    ## just before start of season
+    date >= "2024-08-01"
+  ) |>
+  dplyr::select(
+    -c(
+      dplyr::starts_with("gt_"),
+      dplyr::starts_with("online_"),
+      dplyr::starts_with("covid_calls_")
+    )
+  )
+
+max_dates <- pancasts |>
+  dplyr::select(
+    date,
+    covid_admissions, influenza_admissions,
+    covid_occupancy, influenza_occupancy
+  ) |>
+  # we have to collect here for the summarise across pattern to work
+  dplyr::collect() |>
+  dplyr::summarise(
+    dplyr::across(
+      dplyr::everything(),
+      \(col) {
+        dplyr::pick(date, col) |>
+          dplyr::filter(!is.na(col)) |>
+          dplyr::summarise(max(date)) |>
+          dplyr::pull(1)
+      }
+    )
+  ) |>
+  tidyr::pivot_longer(
+    dplyr::everything(),
+    names_to = "source", values_to = "max_date"
+  )
+
+pancasts <- pancasts |>
+  # we have to collect here for the date <= max_date to work
+  dplyr::collect() |>
+  dplyr::filter(date <= min(max_dates$max_date))
+```
+
+## Overall
+
+```{r}
+#| label: fig-season-overall
+pancasts |>
+  dplyr::select(
+    date, covid_admissions, influenza_admissions, covid_occupancy, influenza_occupancy
+  ) |>
+  dplyr::summarise(
+    dplyr::across(where(is.numeric), \(x) sum(x, na.rm = TRUE)),
+    .by = date
+  ) |>
+  tidyr::pivot_longer(cols = -date, values_to = "value", names_to = "metric") |>
+  dplyr::mutate(
+    disease = stringr::str_extract(metric, "covid|influenza"),
+    metric = stringr::str_extract(metric, "admissions|occupancy")
+  ) |>
+  ggplot2::ggplot(
+    ggplot2::aes(x = date, y = value)
+  ) +
+  ggplot2::geom_line() +
+  ggplot2::facet_grid(metric ~ disease, scales = "free_y")
+```
+
+```{r}
+#| label: read-data
+#| echo: false
+
+samples <- dplyr::tbl(
+  redshift$connect(use_existing = FALSE),
+  I("pancasts_glue.samples")
+)
+summary <- dplyr::tbl(
+  redshift$connect(use_existing = FALSE),
+  I("pancasts_glue.summary")
+)
+
+forecasts <- summary |> # pull known stored results
+  dplyr::filter(
+    disease %in% c("influenza", "covid-19")
+    # Could add more filters,
+    # but we only have "admissions" & "occupancy_rate" here
+  ) |>
+  dplyr::distinct(disease, metric, model_date) |>
+  dplyr::arrange(disease, metric, model_date) |>
+  dplyr::collect() |>
+  dplyr::rename(upload_date = model_date) |> # for later alignment
+  dplyr::rowwise() |>
+  dplyr::mutate( # add database requests (collecting every slice took 30 min)
+    "samples" = list(dplyr::filter(
+      samples,
+      disease == local(disease),
+      metric == local(metric),
+      model_date == upload_date
+    )),
+    "summary" = list(dplyr::filter(
+      summary,
+      disease == local(disease),
+      metric == local(metric),
+      model_date == upload_date
+    )),
+    upload_date = round_to_wednesday(upload_date) # had to match to dbt before
+  ) |>
+  dplyr::ungroup()
+```
+
+
+#### Which models were used when?
+
+```{r}
+#| label: fig-which-models-when-overall
+models_used <- forecasts |>
+  dplyr::filter(metric == "admissions") |>
+  dplyr::mutate(
+    individual_models = purrr::map(
+      samples, \(x) {
+        x |>
+          dplyr::distinct(model) |>
+          dplyr::pull(model)
+      }
+    ),
+    ensemble_string = purrr::map(
+      summary, \(x) {
+        x |>
+          dplyr::distinct(model) |>
+          dplyr::filter(stringr::str_detect(model, "ensemble")) |>
+          dplyr::pull(model)
+      }
+    ),
+    .by = c("disease", "metric")
+  ) |>
+  dplyr::select(
+    upload_date, individual_models, ensemble_string, disease, metric
+  ) |>
+  tidyr::unnest(c(individual_models, ensemble_string)) |>
+  dplyr::mutate(individual_models = dplyr::na_if(individual_models, "")) |>
+  tidyr::drop_na(individual_models) |> # now removes empty strings
+  dplyr::mutate(model_in_ensemble = stringr::str_detect(
+    ensemble_string, individual_models
+  )) |>
+  tidyr::complete(
+    upload_date, individual_models, metric, disease,
+    fill = list(model_in_ensemble = FALSE)
+  ) |>
+  dplyr::group_by(individual_models, metric, disease) |>
+  dplyr::filter(!all(model_in_ensemble == FALSE)) |>
+  dplyr::ungroup() |>
+  dplyr::arrange(upload_date) |>
+  # working out the first time a model was used in an ensemble
+  dplyr::mutate(
+    is_first_use = dplyr::row_number() == 1,
+    .by = c("metric", "disease", "individual_models", "model_in_ensemble")
+  ) |>
+  dplyr::mutate(
+    is_first_use = as.character(is_first_use & model_in_ensemble),
+    upload_date = lubridate::ymd(upload_date)
+  )
+
+upload_date_breaks <- models_used |>
+  dplyr::distinct(upload_date) |>
+  dplyr::filter(dplyr::row_number() %% 2 == 1) |>
+  dplyr::pull(upload_date)
+
+# No false is being shown?
+models_used |>
+  dplyr::mutate(tile_width = 5) |>
+  ggplot2::ggplot(
+    ggplot2::aes(
+      x = upload_date, y = individual_models,
+      fill = model_in_ensemble
+    )
+  ) +
+  ggplot2::geom_tile(
+    ggplot2::aes(width = tile_width),
+    colour = "white",
+    linewidth = 3
+  ) +
+  ggplot2::geom_point(
+    ggplot2::aes(alpha = is_first_use),
+    color = "black"
+  ) +
+  ggplot2::labs(
+    y = "Model name",
+    x = "Forecasting date",
+    fill = "Model in ensemble?",
+    alpha = "Is first use?"
+  ) +
+  ggplot2::scale_alpha_manual(values = c("TRUE" = 1, "FALSE" = 0)) +
+  ggplot2::facet_wrap(~disease, ncol = 1, scales = "free_y") +
+  ggplot2::guides(alpha = ggplot2::guide_legend(nrow = 2)) +
+  ggplot2::scale_x_date(
+    breaks = upload_date_breaks,
+    labels = scales::label_date_short()
+  )
+```
+#### Which metrics were forecasted?
+
+```{r}
+#| label: which-metrics-when
+#| fig-cap: Output forecasts for disease-metric combinations
+
+metrics_forecasted <- forecasts |>
+  dplyr::select(upload_date, metric, disease) |>
+  dplyr::mutate(
+    metric_forecasted = TRUE,
+    upload_date = lubridate::ymd(upload_date)
+  ) |>
+  tidyr::complete(upload_date, metric, disease, fill = list(metric_forecasted = FALSE))
+
+# No false is being shown?
+metrics_forecasted |>
+  dplyr::mutate(tile_width = 5) |>
+  ggplot2::ggplot(
+    ggplot2::aes(x = upload_date, y = metric, fill = metric_forecasted)
+  ) +
+  ggplot2::geom_tile(
+    ggplot2::aes(width = tile_width),
+    colour = "white", linewidth = 3
+  ) +
+  ggplot2::labs(
+    title = "Which metrics were forecasted?",
+    x = "Upload date",
+    fill = "Metric forecasted?"
+  ) +
+  ggplot2::facet_wrap(~disease, ncol = 1) +
+  ggplot2::scale_x_date(
+    breaks = upload_date_breaks,
+    labels = scales::label_date_short()
+  )
+```
+
+
+## Influenza
+
+
+### Hospital Admissions
+
+
+
+```{r}
+#| label: data-flu-national-admissions
+flu_national_admissions <- pancasts |>
+  dplyr::filter(!(trust_code %in% influenza_admissions_config$exclude_trusts)) |>
+  dplyr::summarise(
+    influenza_admissions = sum(influenza_admissions, na.rm = TRUE),
+    .by = date
+  ) |>
+  dplyr::collect()
+
+flu_national_admissions_forecast <- forecasts |>
+  dplyr::filter(metric == "admissions", disease == "influenza") |>
+  dplyr::mutate(summary = purrr::map(
+    summary,
+    \(x) {
+      x |>
+        dplyr::select(-c(disease, metric, model_date)) |> # already present
+        dplyr::collect()
+    }
+  )) |>
+  tidyr::unnest(summary)
+
+flu_forecast_with_truth <- dplyr::left_join(
+  flu_national_admissions_forecast, flu_national_admissions,
+  by = "date"
+)
+```
+
+```{r}
+#| label: score-flu
+flu_scores <- flu_forecast_with_truth |>
+  prepare_forecasts("influenza") |>
+  scoringutils::as_forecast_quantile(
+    forecast_unit = c("prediction_start_date", "quantile_level", "date", "upload_date")
+  ) |>
+  scoringutils::score()
+```
+
+#### Modelling performance
+
+```{r}
+#| label: fig-flu-national
+forecast_end_dates <- flu_forecast_with_truth |>
+  dplyr::slice_max(date, by = "upload_date") |>
+  dplyr::distinct(date) |>
+  dplyr::filter(dplyr::row_number() %% 2 == 1) |>
+  dplyr::pull(date)
+
+flu_forecast_with_truth |>
+  dplyr::filter(
+    location_level == "nation",
+    stringr::str_detect(model, "ensemble")
+  ) |>
+  dplyr::slice_max(date, by = "upload_date") |>
+  ggplot2::ggplot() +
+  ggplot2::geom_line(
+    ggplot2::aes(x = date, y = influenza_admissions, colour = "truth"),
+  ) +
+  ggplot2::geom_linerange(ggplot2::aes(x = date, ymax = pi_75, ymin = pi_25, color = "forecast", linewidth = "50%")) +
+  ggplot2::geom_linerange(ggplot2::aes(x = date, ymax = pi_95, ymin = pi_5, color = "forecast", linewidth = "90%")) +
+  ggplot2::geom_point(ggplot2::aes(x = date, y = pi_50, color = "forecast"), size = 3) +
+  ggplot2::labs(
+    x = "Admission date (day 14 of forecast)",
+    y = "Number national influenza hospital admissions"
+  ) +
+  ggplot2::ggtitle("Influenza forecasts with true data",
+    subtitle = "14-day-ahead forecast with true data | True data is retrospective"
+  ) +
+  ggplot2::scale_linewidth_manual(name = "Prediction interval", values = c("50%" = 1.5, "90%" = 0.8)) +
+  ggplot2::scale_x_date(breaks = forecast_end_dates, labels = scales::label_date_short())
+```
+
+
+```{r}
+#| label: fig-score-flu
+#| fig-cap:
+#| - "Numeric scores show a median value with 90% interval; binary scores show the proportion of successes.
+#| For more infomation about the scoring rules, see the {scoringutils}
+#| [vignette](https://cran.r-project.org/web/packages/scoringutils/vignettes/scoring-rules.html)"
+# Idea: plot scores over time to see if we improving / deproving(???) as season progresses
+
+flu_scores |>
+  dplyr::mutate(
+    dplyr::across(
+      dplyr::starts_with("interval_coverage_"), \(x) as.numeric(x)
+    )
+  ) |>
+  dplyr::select(-upload_date) |>
+  tidyr::pivot_longer(
+    cols = -c(prediction_start_date, date),
+    names_to = "scoring_metric"
+  ) |>
+  dplyr::mutate(
+    is_coverage_metric = stringr::str_detect(scoring_metric, "interval_coverage_")
+  ) |>
+  dplyr::summarise(
+    # find success / failures of inteval esimates for a beta distribution estimate later on
+    success_rate = dplyr::if_else(all(is_coverage_metric), mean(value), NA_real_),
+    # for real-values metrics, compute quantiles
+    q_50 = quantile(value, 0.5),
+    q_05 = quantile(value, 0.05),
+    q_95 = quantile(value, 0.95),
+    is_coverage_metric = unique(is_coverage_metric),
+    .by = c(prediction_start_date, scoring_metric)
+  ) |>
+  dplyr::mutate(
+    upper_limit = dplyr::if_else(is_coverage_metric, success_rate, q_95),
+    lower_limit = dplyr::if_else(is_coverage_metric, success_rate, q_05),
+    central_tendency = dplyr::if_else(is_coverage_metric, success_rate, q_50)
+  ) |>
+  ggplot2::ggplot(
+    ggplot2::aes(x = prediction_start_date, y = central_tendency, ymin = lower_limit, ymax = upper_limit)
+  ) +
+  ggplot2::geom_ribbon(ggplot2::aes(alpha = 0.5)) +
+  ggplot2::geom_line() +
+  ggplot2::scale_x_date(breaks = "2 weeks", labels = scales::label_date_short()) +
+  ggplot2::facet_wrap(~scoring_metric, scales = "free_y") +
+  ggplot2::ggtitle(
+    "Interval-based scores for national influenza",
+    subtitle = "Facets indicate typical forecast performance over the entire two week period."
+  ) +
+  ggplot2::labs(
+    x = "Prediction start date (admission date)",
+    y = "Score"
+  )
+```
+
+
+<!-- TODO Bed Occupancy section, low priority -->
+
+## COVID-19
+
+### Hosptial Admissions
+
+
+```{r}
+#| label: data-covid-national-admissions
+covid_national_admissions <- pancasts |>
+  dplyr::filter(!(trust_code %in% covid_admissions_config$exclude_trusts)) |>
+  dplyr::summarise(
+    covid_admissions = sum(covid_admissions, na.rm = TRUE),
+    .by = date
+  ) |>
+  dplyr::collect()
+
+covid_national_admissions_forecast <- forecasts |>
+  dplyr::filter(metric == "admissions", disease == "covid-19") |>
+  dplyr::mutate(summary = purrr::map(
+    summary,
+    \(x) {
+      x |>
+        dplyr::select(-c(disease, metric, model_date)) |> # already present
+        dplyr::collect()
+    }
+  )) |>
+  tidyr::unnest(summary)
+
+covid_forecast_with_truth <- dplyr::left_join(
+  covid_national_admissions_forecast, covid_national_admissions,
+  by = "date"
+)
+```
+
+```{r}
+#| label: score-covid
+covid_scores <- covid_forecast_with_truth |>
+  prepare_forecasts("covid") |>
+  scoringutils::as_forecast_quantile() |>
+  scoringutils::score()
+```
+
+
+#### Modelling performance
+
+```{r}
+#| label: fig-covid-national
+
+covid_forecast_with_truth |>
+  dplyr::filter(
+    location_level == "nation",
+    stringr::str_detect(model, "ensemble")
+  ) |>
+  dplyr::slice_max(date, by = "upload_date") |>
+  ggplot2::ggplot() +
+  ggplot2::geom_line(
+    ggplot2::aes(x = date, y = covid_admissions, colour = "truth"),
+  ) +
+  ggplot2::geom_linerange(ggplot2::aes(x = date, ymax = pi_75, ymin = pi_25, color = "forecast", linewidth = "50%")) +
+  ggplot2::geom_linerange(ggplot2::aes(x = date, ymax = pi_95, ymin = pi_5, color = "forecast", linewidth = "90%")) +
+  ggplot2::geom_point(ggplot2::aes(x = date, y = pi_50, color = "forecast"), size = 3) +
+  ggplot2::labs(
+    x = "Admission date (day 14 of forecast)",
+    y = "Number national COVID-19 hospital admissions"
+  ) +
+  ggplot2::ggtitle(
+    "COVID-19 forecasts with true data",
+    subtitle = "14-day-ahead forecast with true data | True data is retrospective"
+  ) +
+  ggplot2::scale_linewidth_manual(name = "Prediction interval", values = c("50%" = 1.5, "90%" = 0.8)) +
+  ggplot2::scale_x_date(breaks = forecast_end_dates, labels = scales::label_date_short())
+```
+
+
+```{r}
+#| label: fig-score-covid
+#| fig-cap:
+#| - "Numeric scores show a median value with 90% interval; binary scores show the proportion of successes.
+#| For more infomation about the scoring rules, see the {scoringutils}
+#| [vignette](https://cran.r-project.org/web/packages/scoringutils/vignettes/scoring-rules.html)"
+# Idea: plot scores over time to see if we improving / deproving(???) as season progresses
+covid_scores |>
+  dplyr::mutate(
+    dplyr::across(
+      dplyr::starts_with("interval_coverage_"), \(x) as.numeric(x)
+    )
+  ) |>
+  dplyr::select(-upload_date) |>
+  tidyr::pivot_longer(
+    cols = -c(prediction_start_date, date),
+    names_to = "scoring_metric"
+  ) |>
+  dplyr::mutate(
+    is_coverage_metric = stringr::str_detect(scoring_metric, "interval_coverage_")
+  ) |>
+  dplyr::summarise(
+    # find success / failures of inteval esimates for a beta distribution estimate later on
+    success_rate = dplyr::if_else(all(is_coverage_metric), mean(value), NA_real_),
+    # for real-values metrics, compute quantiles
+    q_50 = quantile(value, 0.5),
+    q_05 = quantile(value, 0.05),
+    q_95 = quantile(value, 0.95),
+    is_coverage_metric = unique(is_coverage_metric),
+    .by = c(prediction_start_date, scoring_metric)
+  ) |>
+  dplyr::mutate(
+    upper_limit = dplyr::if_else(is_coverage_metric, success_rate, q_95),
+    lower_limit = dplyr::if_else(is_coverage_metric, success_rate, q_05),
+    central_tendency = dplyr::if_else(is_coverage_metric, success_rate, q_50)
+  ) |>
+  ggplot2::ggplot(
+    ggplot2::aes(x = prediction_start_date, y = central_tendency, ymin = lower_limit, ymax = upper_limit)
+  ) +
+  ggplot2::geom_ribbon(ggplot2::aes(alpha = 0.5)) +
+  ggplot2::geom_line() +
+  ggplot2::facet_wrap(~scoring_metric, scales = "free_y") +
+  ggplot2::ggtitle(
+    "Interval-based scores for national COVID-19",
+    subtitle = "Facets indicate typical forecast performance over the entire two week period."
+  )
+ggplot2::labs(
+  x = "Prediction start date (admission date)",
+  y = "Score"
+) +
+  ggplot2::scale_x_date(breaks = "2 weeks", labels = scales::label_date_short())
+```

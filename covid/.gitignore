@@ -1,0 +1,10 @@
+./data/*
+./outputs/*
+./"model fits"/*
+./"model_fits"/*
+./optimisation/*
+./data/*
+./scoring/*
+./products/nosocomial-outputs/*
+./scripts/peaks/outputs/*
+*.txt

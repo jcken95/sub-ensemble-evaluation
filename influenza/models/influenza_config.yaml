@@ -1,0 +1,29 @@
+default:
+
+  overall_params:
+    disease: "influenza"
+
+  files:
+    pipeline_path: "PATH REDACTED"
+    pipeline_pattern: ".csv.gz"
+
+  ensemble:
+    gam_cr: true
+    gam_rw: true
+    gam_gp: true
+    ets: true
+    historic_gr_median: true
+    epinow2_rw: false # not fully productionised with correct parameters
+    gam_dow: false # baseline model
+
+  # data quality considerations - which trust to remove
+  # when excluding a trust, write a comment with the date and a brief justification
+  excluded_trusts:
+    filter:
+    - "RYR" # added 16/10/2024 based on PHA analysis
+    - "RJL" # added 13/11/2024 due to exactly constant & high occupancy over last few months
+    - "RXP" # added 04/12/2024 due to inconsistent reporting
+    - "RFS" # added 22/01/2025 due to one-day spike in occupancy reporting (~200 increase overnight, then drop)
+    zero:
+    - "RA7" # added 11/12/2024 due to higher admissions than occupancy (on 2 seperate days)
+    - "RDU" # added 27/11/2024 due to questionable admissions (frimley)

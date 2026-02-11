@@ -1,0 +1,86 @@
+# Post season evaluation config
+# Change `parent_config_file` in {targets} script to the location of this file
+
+
+default:
+
+  target_workers: 8 # sets a mimimum number of parallel processes to assign
+  # may be more on a bigger instances (any excess automatically dropped in 60s)
+
+  # input files
+  files:
+    spatial_network_path: "PATH REDACTED"
+
+  # the variables we need to extract from models
+  required_covariates:
+    - "date"
+    - "icb_name"
+    - "nhs_region_name"
+    - "prediction_start_date"
+    - "model"
+    - "population"
+    - ".sample"
+    - ".value"
+
+  overall_params:
+    metric: "admissions" # "admissions" or "occupancy", based on folder
+    # model_path: "full/path.R" # can set manually here, but generally not needed
+    target_name: "admissions"
+    n_lookbacks: 23
+    forecast_horizon: 14
+    lookback_step_length: 7
+    n_pi_sample: 500
+    is_parallel: TRUE
+    show_peaks: TRUE
+    show_fits: FALSE
+
+  # parameters passed to each model specifically
+  #   order does not matter, but all models need: training_length
+  models:
+
+    gam_cr:
+      include_run: false
+      fit_thinning: 10
+      training_length: 60
+      region_name_q: 21
+
+    gam_rw:
+      include_run: false
+      fit_thinning: 10
+      training_length: 29
+      alpha: 0.762
+
+    gam_gp:
+      include_run: false
+      fit_thinning: 10
+      training_length: 95
+      nation_alpha: 0.8
+      region_alpha: 0.8
+
+    ets:
+      include_run: false
+      fit_thinning: 10
+      training_length: 37
+      alpha: 0.14
+      beta: 0.04
+      phi: 0.87
+      gamma: NULL
+      nmse: 2
+
+    historic_gr_median:
+      include_run: false
+      fit_thinning: 10
+      training_length: 40
+      season: "median_smooth" # mean, lower, upper, median
+
+    # baseline model
+    gam_dow:
+      include_run: true
+      fit_thinning: 10
+      training_length: 14
+
+
+
+  # define thresholds for classification of trend as a rate
+  thresholds:
+    admissions: 0.2 # (20%)

@@ -1,0 +1,214 @@
+---
+title: "PoC dashboard"
+author: "Infectious disease modelling team, UKHSA - OFFICIAL SENSITIVE"
+format:
+  dashboard:
+    scrolling: true
+    self-contained: true
+embed-resources: true
+params:
+  s3_path: NULL
+  region: "London"
+---
+
+``` {r}
+#| label: setup
+
+options("box.path" = rprojroot::find_rstudio_root_file("src", "R"))
+
+box::use(
+  box / redshift,
+  prj / dashboard / helpers
+)
+
+
+rs <- redshift$data_model("REDACTED")
+icb_region_lookup <- rs$REDACTED |>
+  dplyr::select(icb23nm, nhser23nm)
+
+
+wdays_regex <- weekdays(
+  seq(from = lubridate::ym("2024-01"), to = lubridate::ym("2024-01") + lubridate::days(6), by = "days"),
+  abbreviate = TRUE
+) |>
+  paste(collapse = "|")
+
+output_dir <- tibble::tibble(dirs = list.dirs("covid/outputs/admissions", recursive = FALSE)) |>
+  dplyr::filter(stringr::str_detect(dirs, wdays_regex)) |>
+  utils::tail(1) |>
+  dplyr::pull(1)
+```
+
+```  {r}
+#| label: data-import
+
+model_summary <- aws.s3::s3read_using(
+  vroom::vroom,
+  object = params$s3_path
+)
+
+ensemble <- dplyr::filter(model_summary, stringr::str_detect(model, "ensemble"), prediction_start_date == max(prediction_start_date))
+```
+
+# National
+
+## Row
+
+``` {r}
+#| label: national
+national <- dplyr::filter(ensemble, age_group == "all", location_level == "nation")
+national_last <- utils::tail(national, 1)
+```
+
+
+
+## Row
+
+```{r}
+#| content: valuebox
+#| title: "Probability of increase"
+#| icon: arrow-up-right
+#| color: primary
+list(
+  value = national_last$p_increase
+)
+```
+
+```{r}
+#| content: valuebox
+#| title: "Probability of stable"
+#| icon: arrow-right
+#| color: primary
+list(
+  value = national_last$p_stable
+)
+```
+
+```{r}
+#| content: valuebox
+#| title: "Probability of decrease"
+#| icon: arrow-down-right
+#| color: primary
+list(
+  value = national_last$p_decrease
+)
+```
+
+## Row
+
+``` {r}
+#| label: fig-national
+helpers$plot_projection(national)
+```
+
+``` {r}
+#| label: tbl-national
+helpers$tabulate_projection(national) |>
+  gt::tab_header("National")
+```
+
+# `r snakecase::to_title_case(params$region)`
+
+``` {r}
+#| label: regional
+regional <- dplyr::filter(ensemble, location == params$region, age_group == "all", location_level == "region")
+national_last <- utils::tail(regional, 1)
+```
+
+## Row
+
+```{r}
+#| content: valuebox
+#| title: "Probability of increase"
+#| icon: arrow-up-right
+#| color: primary
+list(
+  value = national_last$p_increase
+)
+```
+
+```{r}
+#| content: valuebox
+#| title: "Probability of stable"
+#| icon: arrow-right
+#| color: primary
+list(
+  value = national_last$p_stable
+)
+```
+
+```{r}
+#| content: valuebox
+#| title: "Probability of decrease"
+#| icon: arrow-down-right
+#| color: primary
+list(
+  value = national_last$p_decrease
+)
+```
+
+##  Row
+
+``` {r}
+#| label: fig-regional
+helpers$plot_projection(regional)
+```
+
+``` {r}
+#| label: tbl-regional
+helpers$tabulate_projection(regional) |>
+  gt::tab_header(params$region)
+```
+
+
+# ICB within `r snakecase::to_title_case(params$region)`
+
+``` {r}
+#| label: icb
+
+regional_icb <- dplyr::filter(icb_region_lookup, nhser23nm == params$region)
+icb <- dplyr::filter(
+  ensemble,
+  location_level == "icb",
+  age_group == "all",
+  location %in% dplyr::pull(regional_icb, icb23nm)
+)
+```
+##  Row
+
+``` {r}
+#| label: fig-icb
+
+
+
+icb <- dplyr::filter(
+  ensemble,
+  location_level == "icb",
+  age_group == "all",
+  location %in% dplyr::pull(regional_icb, icb23nm)
+) |>
+  tidyr::nest(data = -location) |>
+  dplyr::mutate(
+    data = purrr::map2(data, location, \(df, loc) dplyr::mutate(df, location = loc)),
+    graph = purrr::map(data, helpers$plot_projection),
+    table = purrr::map2(
+      data, location,
+      \(df, loc) {
+        helpers$tabulate_projection(df) |>
+          gt::tab_header(helpers$clean_icb_names(loc))
+      }
+    )
+  )
+
+for (gg in icb$graph) {
+  print(gg)
+}
+```
+
+``` {r}
+#| label: tbl-icb
+#| results: asis
+for (tab in icb$table) {
+  print(tab)
+}
+```

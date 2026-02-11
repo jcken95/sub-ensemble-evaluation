@@ -1,0 +1,148 @@
+---
+title: Regional team QA
+author: Pancasts | Infectious disease modelling team
+format:
+  ukhsa-html: default
+date: last-modified
+message: false
+warning: false
+echo: false
+---
+
+::: {.callout-warning}
+OFFICIAL SENSITIVE
+
+This product is OFF-SEN and for internal Q&A within the Infectious Disease Modelling Team and is not intended to be shared.
+
+DO NOT share outside of IDM without approval at G7 grade or higher.
+:::
+
+```{r}
+#| label: box-setup
+
+# all print options manually false
+# chunk checks if you're in an R Project, and if so, sets the box path
+options("box.path" = unique(c(
+  getOption("box.path"),
+  tryCatch(
+    rprojroot::find_rstudio_root_file("src", "R"),
+    error = function(e) NULL
+))
+))
+```
+
+```{r}
+#| label: load-outputs
+targets::tar_load(output_regional_team_summary)
+
+# rename for convenience
+regions <- output_regional_team_summary
+```
+
+```{r}
+#| label: national-outputs
+#| results: asis
+national_summary <- dplyr::filter(regions, region == "England", geography == "nation")
+
+national_summary |>
+  dplyr::select(region, narrative, dplyr::ends_with("_rounded")) |>
+  dplyr::rename_with(\(.str) stringr::str_remove(.str, "_rounded")) |>
+  gt::gt() |>
+  gt::cols_width(narrative ~ gt::px(400)) |>
+  print()
+
+cat("\n\n")
+
+national_summary |>
+  purrr::pluck("plot", 1) |>
+  print()
+
+cat("\n\n")
+```
+
+```{r}
+#| label: regional-outputs
+#| results: asis
+england_regions <- dplyr::filter(regions, geography == "region")
+
+
+for (region_index in seq_along(england_regions$region)) {
+
+  chosen_region <- england_regions$region[[region_index]]
+
+  regions |>
+    dplyr::filter(geography != "icb", region == chosen_region) |>
+    dplyr::select(region, narrative, dplyr::ends_with("_rounded")) |>
+    dplyr::rename_with(\(.str) stringr::str_remove(.str, "_rounded")) |>
+    gt::gt() |>
+    gt::cols_width(narrative ~ gt::px(400)) |>
+    print()
+
+  cat("\n\n")
+
+  england_regions |>
+    purrr::pluck("plot", region_index) |>
+    print()
+
+  cat("\n\n")
+}
+```
+
+```{r}
+#| results: asis
+#| label: regional-header
+if (any(regions$disease != "rsv")) cat("## Sub-regional analysis \n\n")
+```
+
+::: {.panel-tabset}
+
+```{r}
+#| results: asis
+#| label: regional-plots
+
+# only supply sub-regional forecasts for covid, flu
+if (any(regions$disease != "rsv")) {
+
+  england_regions <- regions |>
+    dplyr::distinct(region) |>
+    dplyr::filter(region != "England") |>
+    dplyr::pull(region)
+
+  purrr::walk(
+    england_regions,
+    \(chosen_region) {
+
+      cat("###", chosen_region, "\n\n") #  TODO: drop plot
+
+      icb_within_region <- dplyr::filter(
+        regions,
+        region == chosen_region,
+        geography == "icb"
+      )
+
+      for (icb_index in seq_along(icb_within_region$icb)) {
+
+        icb_within_region |>
+          dplyr::select(icb, narrative) |>
+          dplyr::slice(icb_index) |>
+          gt::gt() |>
+          print()
+
+        cat("\n\n")
+
+        icb_within_region |>
+          purrr::pluck("plot", icb_index) |>
+          print()
+
+        cat("\n\n")
+
+      }
+
+      cat("\n\n")
+
+    }
+  )
+}
+```
+
+:::

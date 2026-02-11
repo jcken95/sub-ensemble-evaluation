@@ -1,0 +1,23 @@
+influenza:
+  filter:
+    - "RYR" # added 16/10/2024 based on PHA analysis
+    - "RJL" # added 13/11/2024 due to exactly constant & high occupancy over last few months
+    - "RXP" # added 04/12/2024 due to inconsistent reporting
+    - "RFS" # added 22/01/2025 due to one-day spike in occupancy reporting (~200 increase overnight, then drop)
+  zero:
+    - "RA7" # added 11/12/2024 due to higher admissions than occupancy (on 2 seperate days)
+    - "RDU" # added 27/11/2024 due to questionable admissions (frimley)
+
+covid:
+  filter: []
+  zero: []
+
+norovirus:
+  filter: []
+  zero: []
+
+rsv:
+  filter:
+    - "RJE" # removed unrealisticly high tests across ages in wc 20/10/2024
+    - "RJN" # removed unrealisticly high tests across some ages in wc 20/10/2024
+  zero: []

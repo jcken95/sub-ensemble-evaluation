@@ -1,0 +1,31 @@
+# Post season evaluation config
+# Change `parent_config_file` in {targets} script to the location of this file
+
+default:
+
+  files:
+    pipeline_path: "PATH REDACTED"
+    pipeline_pattern: ".csv.gz"
+
+  overall_params:
+    disease: "covid"
+  # separate config section to define models going
+  # into ensemble
+  ensemble:
+    gam_cr: true
+    gam_gp: true
+    gr_gp: true
+    gam_rw: true
+    ets: true
+    gr_mean: true
+    epinow2_rw: true
+    gam_dow: true # baseline model
+
+  # data quality considerations - which trust to remove
+  # when excluding a trust, write a comment with the date and a brief justification
+  # data quality considerations - which trust to remove
+  # when excluding a trust, write a comment with the date and a brief justification
+  excluded_trusts:
+    filter: []
+    zero:
+    - "REF" # added 06/03/2025 due to refactor - no data reported since Sept 2024.

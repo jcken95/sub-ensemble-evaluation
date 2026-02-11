@@ -1,0 +1,100 @@
+# Configuration for covid admissions models
+
+default:
+  files:
+    spatial_network_path: "PATH REDACTED"
+
+  required_covariates:
+    - "date"
+    - "trust_code"
+    - "icb_name"
+    - "nhs_region_name"
+    - "prediction_start_date"
+    - "model"
+    - "population"
+    - ".sample"
+    - ".value"
+
+  overall_params:
+    target_name: "admissions" # "admissions"
+    metric: "admissions" # "admissions" or "occupancy", based on folder
+    #'' model_path: "full/path.R" # can set manually here but generally not needed
+    n_lookbacks: 23
+    forecast_horizon: 14
+    lookback_step_length: 7
+    n_pi_sample: 500
+    show_peaks: TRUE
+    show_fits: FALSE
+    threshold_type: "relative" # "absolute" is another option; change values below
+    # comment out which models to run
+
+
+  # parameters passed to each model specifically
+  #   order does not matter, but all models need: training_length
+  models:
+
+    gam_cr:
+      include_run: false
+      fit_thinning: 10
+      training_length: 105
+      nation_q: 17
+
+    gam_gp:
+      include_run: false
+      fit_thinning: 10
+      training_length: 170
+      nhs_region_name_q: 5
+      icb_name_q: 20
+
+    gam_rw:
+      include_run: false
+      fit_thinning: 10
+      training_length: 56
+      alpha: 0.762
+
+    gr_gp:
+      include_run: false
+      fit_thinning: 10
+      training_length: 100
+      region_lengthscale: 0.22
+      region_trend: false
+      national_lengthscale: 0.241
+      national_trend: true
+      size: 166
+      rolling_k: 7
+
+    ets:
+      include_run: false
+      fit_thinning: 10
+      training_length: 20
+      alpha: 0.388
+      beta: 0.0407
+      phi: 0.888
+      gamma: NULL
+      nmse: 16
+
+    gr_mean:
+      include_run: false
+      fit_thinning: 10
+      training_length: 28
+      size: 250
+      rolling_k: 7
+
+    # baseline model
+    gam_dow:
+      include_run: true
+      fit_thinning: 10
+      training_length: 14
+
+
+
+
+
+    # define thresholds for classification of trend as a rate
+  thresholds:
+  # prior absolute value: 0.000001 i.e. 0.1 per 100k
+  # Suggested relative value: 20% #
+    admissions: 0.2
+
+  target_workers: 24 # sets a mimimum number of parallel processes to assign
+  # may be more on a bigger instances (any excess automatically dropped in 60s)

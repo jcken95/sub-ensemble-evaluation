@@ -1,0 +1,18 @@
+covid_admissions:
+  store: _targets/covid_admissions/
+  script: covid/models/admissions/_targets.R
+covid_occupancy:
+  store: _targets/covid_occupancy/
+  script: covid/models/occupancy/_targets.R
+influenza_admissions:
+  store: _targets/influenza_admissions/
+  script: influenza/models/admissions/_targets.R
+influenza_occupancy:
+  store: _targets/influenza_occupancy/
+  script: influenza/models/occupancy/_targets.R
+rsv_admissions:
+  store: _targets/rsv_admissions/
+  script: rsv/models/admissions/_targets.R
+norovirus_cases:
+  store: _targets/norovirus_cases/
+  script: norovirus/models/cases/_targets.R

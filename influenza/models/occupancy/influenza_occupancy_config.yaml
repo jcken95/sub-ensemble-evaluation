@@ -1,0 +1,24 @@
+default:
+  files:
+    admissions_forecast_data: "latest" # can be set manually
+    admissions_forecast_pattern: "all_models_predictions_samples_"
+    admissions_forecast_path: "PATH REDACTED"
+
+  overall_params:
+    target_name: "occupancy_rate" # not used
+    metric: "occupancy"
+    model_name: "ensemble_conversion"
+    n_pi_sample: 500
+    warmup_iterations: 500
+    max_lag: 28
+    forecast_horizon: 14
+    training_length: 50
+    threshold_type:  "relative" # "absolute" # an option but change values below:
+    threshold_rates:
+      upper_rate: 0.2 # prior absolute value: +/- 0.005, i.e. 0.5%
+      lower_rate: -0.2 # Sugested relative threshold: 20%
+    show_peaks: TRUE # TODO fix / use updated peaks
+    show_fits: FALSE
+
+  target_workers: 5 # sets a mimimum number of parallel processes to assign
+  # may be more on a bigger instances (any excess automatically dropped in 60s)
