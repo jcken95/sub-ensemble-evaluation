@@ -4,7 +4,7 @@ Code to facilitate evaluation of UKHSA forecasts over winter 2024-25 and to acco
 
 Paper link: tbc
 
-Authors: [@jcken95](github.com/jcken95), [@DrAuxetic](github.com/DrAuxetic), [@owenjonesuob](github.com/owenjonesuob), [Steven Riley](https://www.gov.uk/government/people/steven-riley), [Thomas Ward](https://www.researchgate.net/scientific-contributions/Thomas-Ward-2205092081), [@maria-tang](github.com/maria-tang),  [@jonathonmellor](github.com/jonathonmellor)
+Authors: [@jcken95](https://www.github.com/jcken95), [@DrAuxetic](https://www.github.com/DrAuxetic), [@owenjonesuob](https://www.github.com/owenjonesuob), [Steven Riley](https://www.gov.uk/government/people/steven-riley), [Thomas Ward](https://www.researchgate.net/scientific-contributions/Thomas-Ward-2205092081), [@maria-tang](https://www.github.com/maria-tang),  [@jonathonmellor](https://www.github.com/jonathonmellor)
 
 ## Code content
 
