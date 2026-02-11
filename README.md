@@ -10,7 +10,9 @@ Authors: [@jcken95](github.com/jcken95), [@DrAuxetic](github.com/DrAuxetic), [@o
 
 This is a one-way push of the relevant contents of the operational repository used to deliver forecasts within UKHSA in winter 2024/25.
 
-The repository represents the state of code at the end of the 2024/25 season.
+The repository represents the state of code at the end of the 2024/25 season as well as scripts to support the publication analysis.
+
+The Winter 24/25 season was the first time we used [{targets}](https://books.ropensci.org/targets/) for our modelling pipelines. This allowed for many operational enhancements including checkpointing of code, enhanced parallelisation and a simpler-to-run interface over standard R scripts.
 
 ### Key notes
 
