@@ -31,7 +31,7 @@ We have open sourced this code to support the transparency of the project with t
 
 ### Changes between 2023/24 & 2024/25
 
-Over summer 2024 there were minor changes to the code base. The primary changes were:
+Over summer 2025 there were minor changes to the code base. The primary changes were:
 
  * Development of Norovirus into a regional model (previously only a national model)
  * Addition of new models to our ensemble suite
