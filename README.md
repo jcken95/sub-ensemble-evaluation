@@ -2,7 +2,7 @@
 
 Code to facilitate evaluation of UKHSA forecasts over winter 2024-25 and to accompany the paper _Evaluation of short-term multi-target respiratory forecasts over winter 2024-25 in England using sub-ensemble contribution analyses_.
 
-Paper link: tbc
+Pre-print version (not yet peer-reviewed) available [here](https://www.medrxiv.org/content/10.64898/2026.02.12.26346156v2)
 
 Authors: [@jcken95](https://www.github.com/jcken95), [@DrAuxetic](https://www.github.com/DrAuxetic), [@owenjonesuob](https://www.github.com/owenjonesuob), [Steven Riley](https://www.gov.uk/government/people/steven-riley), [Thomas Ward](https://www.researchgate.net/scientific-contributions/Thomas-Ward-2205092081), [@maria-tang](https://www.github.com/maria-tang),  [@jonathonmellor](https://www.github.com/jonathonmellor)
 
