@@ -24,7 +24,7 @@ samples <- dplyr::tbl(redshift$connect(use_existing = FALSE), I("REDACTED")) |>
   # chop off additional null predictions from gam_dow model
   dplyr::filter(date < prediction_start_date + lubridate::weeks(2))
 
-summary <- dplyr::tbl(redshift$connect(use_existing = FALSE), I("pancasts_glue.summary")) |>
+summary <- dplyr::tbl(redshift$connect(use_existing = FALSE), I("REDACTED")) |>
   # applying same model_date fix as for samples for same reasons
   dplyr::mutate(
     model_date = dplyr::if_else(
