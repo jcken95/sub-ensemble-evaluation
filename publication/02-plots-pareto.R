@@ -21,19 +21,26 @@ deps_$need(
   "tidyr"
 )
 
-ggplot2::theme_set(projection_plots$theme_pancasts())
+ggplot2::theme_set(
+  projection_plots$theme_pancasts() +
+    ggplot2::theme(
+      plot.title = ggplot2::element_text(size = 12),
+      text = ggplot2::element_text(size = 10)
+    )
+)
 
 source(here::here("evaluation/helpers.R"))
 
-plot_output_dir <- fs::dir_create(
-  here::here("publication/plots")
-)
+plot_output_dir <- fs::dir_create(here::here("publication/plots"))
+plot_output_dir_tiff <- fs::dir_create(here::here(plot_output_dir, "tiff"))
+plot_supplement_dir_tiff <- fs::dir_create(here::here(plot_output_dir_tiff, "supplement"))
+
 ## Pareto plots ----
 
 all_mean_model_effect <- readRDS(here::here("publication/data/all_mean_model_effect.rds"))
 
-scoring_s3_root <- "PATH REDACTED"
-scoring_s3_root_ordinal <- "PATH REDACTED"
+scoring_s3_root <- "REDACTED"
+scoring_s3_root_ordinal <- "REDACTED"
 
 ensembles_scored <- tibble::tibble(
   s3_path = s3fs::s3_dir_ls(scoring_s3_root)
@@ -68,7 +75,8 @@ all_scores <- rps_scored |>
       "date",
       "disease"
     )
-  )
+  ) |>
+  dplyr::filter(model != "ensemble_matched")
 
 score_summary <- all_scores |>
   dplyr::summarise(
@@ -119,9 +127,6 @@ pareto_front <- weighted_score_summary |>
     .keep = "unused"
   ) |>
   tidyr::unnest(front)
-
-# NOTE: Due to the density of the text, it is advisable to view plots in a separate window, not in RStudio pane
-# TODO: rework these plots to look nicer :)
 
 pareto_front <- pareto_front |>
   dplyr::mutate(
@@ -175,27 +180,39 @@ model_code_lookup <- weighted_score_summary |>
   dplyr::summarise(code_name = stringr::str_flatten(unique(name_short)))
 
 
-weighted_pareto_plot <- weighted_score_summary |>
-  tidyr::unnest(summary) |>
-  dplyr::mutate(is_front = dplyr::if_else(model %in% pareto_front$model, "PO", "NPO")) |>
-  dplyr::left_join(model_code_lookup, by = c("model" = "ensemble")) |>
-  ggplot2::ggplot(ggplot2::aes(x = wis_per_100k, y = rps)) +
-  ggplot2::geom_point(ggplot2::aes(colour = is_front, fill = is_front)) +
-  ggplot2::geom_line(data = pareto_front, colour = projection_plots$select_ukhsa_colour("teal")) +
-  ggrepel::geom_text_repel(ggplot2::aes(label = code_name, colour = is_front), force = 15, nudge_x = 0.0005) +
-  ggplot2::scale_colour_manual(values = c("PO" = projection_plots$select_ukhsa_colour("teal"), "NPO" = "black")) +
-  ggplot2::scale_fill_manual(values = c("PO" = projection_plots$select_ukhsa_colour("teal"), "NPO" = "black")) +
-  ggplot2::labs(
-    x = "log(pcWIS*)",
-    y = "RPS*"
-  ) +
-  projection_plots$theme_pancasts() +
-  ggplot2::theme(legend.position = "none") +
-  ggplot2::facet_wrap(~disease, scales = "free") +
-  ggplot2::ggtitle(
-    "Ensemble Pareto front",
-    "RPS* and pcWIS* are computed as a weighted average across geographies"
+weighted_pareto_plot <-
+  withr::with_seed(
+    seed = 4321,
+    code = {
+      weighted_score_summary |>
+        tidyr::unnest(summary) |>
+        dplyr::mutate(is_front = dplyr::if_else(model %in% pareto_front$model, "PO", "NPO")) |>
+        dplyr::left_join(model_code_lookup, by = c("model" = "ensemble")) |>
+        ggplot2::ggplot(ggplot2::aes(x = log(wis_per_100k), y = log(rps))) +
+        ggplot2::geom_point(ggplot2::aes(colour = is_front, fill = is_front), size = 0.75) +
+        ggplot2::geom_line(data = pareto_front, colour = projection_plots$select_ukhsa_colour("teal")) +
+        ggrepel::geom_text_repel(
+          ggplot2::aes(label = code_name, colour = is_front),
+          size = 3
+        ) +
+        ggplot2::scale_colour_manual(
+          values = c("PO" = projection_plots$select_ukhsa_colour("teal"), "NPO" = "grey30")
+        ) +
+        ggplot2::scale_fill_manual(values = c("PO" = projection_plots$select_ukhsa_colour("teal"), "NPO" = "black")) +
+        ggplot2::labs(
+          x = "log(pcWIS*)",
+          y = "log(RPS*)"
+        ) +
+        projection_plots$theme_pancasts() +
+        ggplot2::theme(legend.position = "none") +
+        ggplot2::facet_wrap(~disease, scales = "free", ncol = 1) +
+        ggplot2::ggtitle(
+          "Sub-Ensemble Pareto front",
+          "RPS* and pcWIS* are computed as a weighted average across geographies"
+        )
+    }
   )
+
 
 layout <- c(
   patchwork::area(t = 1, l = 1, b = 4, r = 5),
@@ -214,7 +231,7 @@ model_code_table <- model_code |>
 
 model_code_table
 
-weighted_pareto_combo <- weighted_pareto_plot + model_code_table + patchwork::plot_layout(widths = c(5, 1.5))
+weighted_pareto_combo <- weighted_pareto_plot + model_code_table + patchwork::plot_layout(widths = c(3, 2))
 
 weighted_pareto_combo
 
@@ -223,6 +240,15 @@ ggplot2::ggsave(
   plot = weighted_pareto_combo,
   width = 16,
   height = 12
+)
+
+ggplot2::ggsave(
+  filename = here::here(plot_output_dir_tiff, "fig_5.tiff"),
+  plot = weighted_pareto_combo,
+  width = 19,
+  height = 14.25,
+  dpi = 300,
+  units = "cm"
 )
 
 ## What if we don't weight the scores?
@@ -331,7 +357,17 @@ pareto_contributions <- fronts |>
 
 
 ggplot2::ggsave(
-  here::here(plot_output_dir, "SUPPLEMENT_pareto_contributions.png"),
+  plot = pareto_contributions,
+  filename = here::here(plot_output_dir, "SUPPLEMENT_pareto_contributions.png"),
   width = 16,
   height = 12
+)
+
+ggplot2::ggsave(
+  filename = here::here(plot_supplement_dir_tiff, "fig_c.tiff"),
+  plot = weighted_pareto_combo,
+  width = 19,
+  height = 14.25,
+  dpi = 300,
+  units = "cm"
 )

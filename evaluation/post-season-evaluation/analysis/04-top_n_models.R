@@ -35,14 +35,20 @@ force_write <- TRUE # replace to TRUE if you would like to completely restart th
 
 if (read_data_from_s3) {
   s3_paths <- tibble::tibble(
-    path = s3fs::s3_dir_ls(path = "PATH REDACTED")
+    path = s3fs::s3_dir_ls(path = "REDACTED")
   ) |>
     dplyr::filter(!stringr::str_detect(path, "ensembles.rds")) |>
     # only want to read in .rds files
     dplyr::filter(stringr::str_ends(path, ".rds"))
 
   ensembles <- s3_paths |>
-    dplyr::mutate(data = purrr::map(path, aws.s3::s3readRDS, .progress = "reading in RDS files"))
+    dplyr::mutate(
+      data = purrr::map(
+        path,
+        \(.path) aws.s3::s3readRDS(.path) |> dplyr::filter(quantile_level %in% c(5.0, 25.0, 50.0, 75.0, 95.0)),
+        .progress = "reading in RDS files"
+      )
+    )
 }
 
 forecasting_unit <- c(
@@ -60,8 +66,9 @@ forecasting_unit <- c(
 )
 
 samples_retrospective <- dplyr::tbl(redshift$connect(use_existing = FALSE), I("REDACTED"))
+summary_retrospective <- dplyr::tbl(redshift$connect(use_existing = FALSE), I("REDACTED"))
 
-ensemble_model_combinations <- samples_retrospective |>
+ensemble_model_combinations <- summary_retrospective |>
   # don't want to ensemble the ensembles!
   dplyr::filter(!stringr::str_detect(model, "ensemble")) |>
   # don't care about the DoW model
@@ -71,6 +78,7 @@ ensemble_model_combinations <- samples_retrospective |>
   dplyr::collect()
 
 models_regex <- unique(ensemble_model_combinations$model) |>
+  c("ensemble_matched") |>
   stringr::str_flatten(collapse = "|")
 
 divide <- function(x, y) {
@@ -78,6 +86,9 @@ divide <- function(x, y) {
 } # small helper for scoring
 
 ensembles_unnest <- ensembles |>
+  dplyr::mutate(
+    data = purrr::map(data, \(.d) dplyr::mutate(.d, model_date = as.Date(model_date)))
+  ) |>
   dplyr::rowwise() |>
   dplyr::mutate(
     model = stringr::str_extract_all(path, models_regex) |>
@@ -99,7 +110,7 @@ ensembles_quantile <- ensembles_unnest |>
 
 message("scoring forecasts")
 
-scoring_s3_root <- "PATH REDACTED"
+scoring_s3_root <- "REDACTED"
 
 ensemble_identifiers <- ensembles_quantile |>
   tibble::as_tibble() |>
@@ -116,7 +127,7 @@ ensembles_s3_scoring <- ensemble_identifiers |>
       \(.model, .disease) {
         s3_path <- glue::glue("{scoring_s3_root}/{.disease}-{.model}.rds")
 
-        if (s3fs::s3_file_exists(s3_path) & isFALSE(force_write)) {
+        if (s3fs::s3_file_exists(s3_path) && isFALSE(force_write)) {
           return(s3_path)
         } # don't want to rerun analysis
 

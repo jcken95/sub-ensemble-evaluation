@@ -1,4 +1,6 @@
-source("evaluation/post-season-evaluation/analysis/00-depends.R")
+# construct sub-ensembles based on retrospective model runs (and save to s3)
+# use a quantile (and probability) averaging method to construct ensembles cheaply
+source("evaluation/post-season-evaluation/data_prep/01-load_data.R")
 deps_$need(
   "aws.s3",
   "dplyr",
@@ -63,7 +65,6 @@ model_combinations <- ensemble_model_combinations |>
   dplyr::mutate(id = dplyr::row_number()) |> # useful to help nest the model
   tidyr::nest(models = dplyr::starts_with("model_"), .by = c(id, disease, prediction_start_date)) |>
   dplyr::distinct(disease, models)
-# TODO: collect() summary_retrospective when using table
 summary_local <- summary_retrospective |>
   # don't want to ensemble the ensembles!
   dplyr::filter(!stringr::str_detect(model, "ensemble")) |>
@@ -107,7 +108,7 @@ ensembles_s3 <- ensembles |>
           unique() |>
           paste0(collapse = "_")
 
-        s3_path <- glue::glue("PATH REDACTED")
+        s3_path <- glue::glue("REDACTED/{disease}_{models}.rds")
 
         s3_exists <- s3fs::s3_file_exists(s3_path)
 

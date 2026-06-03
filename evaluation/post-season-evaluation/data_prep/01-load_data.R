@@ -1,8 +1,8 @@
-source("evaluation/post-season-evaluation/analysis/00-depends.R")
+source("~/idm-winter-evaluation-2024/evaluation/post-season-evaluation/analysis/00-depends.R")
 deps_$need(
   "dplyr",
   "ggplot2",
-  "lubrdate",
+  "lubridate",
   "stringr"
 )
 
@@ -24,7 +24,7 @@ samples <- dplyr::tbl(redshift$connect(use_existing = FALSE), I("REDACTED")) |>
   # chop off additional null predictions from gam_dow model
   dplyr::filter(date < prediction_start_date + lubridate::weeks(2))
 
-summary <- dplyr::tbl(redshift$connect(use_existing = FALSE), I("REDACTED")) |>
+summary <- dplyr::tbl(redshift$connect(use_existing = FALSE), I("pancasts_glue.summary")) |>
   # applying same model_date fix as for samples for same reasons
   dplyr::mutate(
     model_date = dplyr::if_else(
@@ -71,8 +71,6 @@ summary |>
   dplyr::filter(
     location_level == "nation",
     age_group == "all",
-    # TODO: better ensemble filter; early RSV models were single-model (tp|gp)
-    # noro is also a single-model approach (nowcast)
     grepl("ensemble|tp|gp|nowcast", model),
     (date >= prediction_start_date) | (date >= prediction_start_date - lubridate::days(7) & disease == "norovirus"),
     model_date > "2024-09-01"

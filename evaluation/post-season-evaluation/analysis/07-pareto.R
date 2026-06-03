@@ -28,13 +28,18 @@ ggplot2::theme_set(theme_pancasts())
 
 message("scoring forecasts")
 
-scoring_s3_root <- "PATH REDACTED"
-scoring_s3_root_ordinal <- "PATH REDACTED"
+scoring_s3_root <- "REDACTED"
+scoring_s3_root_ordinal <- "REDACTED"
 
 ensembles_scored <- tibble::tibble(
   s3_path = s3fs::s3_dir_ls(scoring_s3_root)
 ) |>
-  dplyr::mutate(data = purrr::map(s3_path, \(fpath) s3$read_using(fpath, fn = readRDS))) |>
+  dplyr::mutate(
+    data = purrr::map(
+      s3_path,
+      \(fpath) s3$read_using(fpath, fn = readRDS) |> dplyr::mutate(model_date = as.Date(model_date))
+    )
+  ) |>
   tidyr::unnest(data) |>
   dplyr::select(-s3_path) |>
   # was created post-season, and trained on 24/25 season, biases results
@@ -44,7 +49,12 @@ ensembles_scored <- tibble::tibble(
 rps_scored <- tibble::tibble(
   s3_path = s3fs::s3_dir_ls(scoring_s3_root_ordinal)
 ) |>
-  dplyr::mutate(data = purrr::map(s3_path, \(fpath) s3$read_using(fpath, fn = readRDS))) |>
+  dplyr::mutate(
+    data = purrr::map(
+      s3_path,
+      \(fpath) s3$read_using(fpath, fn = readRDS) |> dplyr::mutate(model_date = as.Date(model_date))
+    )
+  ) |>
   tidyr::unnest(data) |>
   dplyr::select(-s3_path) |>
   # was created post-season, and trained on 24/25 season, biases results
