@@ -1,4 +1,4 @@
-source("~/idm-winter-evaluation-2024/evaluation/post-season-evaluation/analysis/00-depends.R")
+source("evaluation/post-season-evaluation/analysis/00-depends.R")
 deps_$need(
   "dplyr",
   "ggplot2",
