@@ -21,7 +21,7 @@ deps_$need(
 )
 # Script is ram-heavy; split by disease
 
-chosen_disease <- "covid-19"
+chosen_disease <- "influenza"
 
 source("evaluation/helpers.R")
 
@@ -35,14 +35,22 @@ force_write <- TRUE # replace to TRUE if you would like to completely restart th
 
 if (read_data_from_s3) {
   s3_paths <- tibble::tibble(
-    path = s3fs::s3_dir_ls(path = "PATH REDACTED")
+    path = s3fs::s3_dir_ls(path = "REDACTED")
   ) |>
     dplyr::filter(!stringr::str_detect(path, "ensembles.rds")) |>
     # only want to read in .rds files
     dplyr::filter(stringr::str_ends(path, ".rds"))
 
   ensembles <- s3_paths |>
-    dplyr::mutate(data = purrr::map(path, aws.s3::s3readRDS, .progress = "reading in RDS files")) |>
+    dplyr::mutate(
+      data = purrr::map(
+        path,
+        \(.path) {
+          aws.s3::s3readRDS(.path) |> dplyr::mutate(model_date = as.Date(model_date))
+        },
+        .progress = "reading in RDS files"
+      )
+    ) |>
     tidyr::unnest(data) |>
     dplyr::filter(disease == chosen_disease) |>
     dplyr::select(-p_total) |>
@@ -74,7 +82,7 @@ ensembles <- ensembles |>
 
 summary <- dplyr::tbl(
   redshift$connect(use_existing = FALSE),
-  I("pancasts_glue.summary")
+  I("REDACTED")
 )
 
 observed <- redshift$data_model("REDACTED")$REDACTED
@@ -125,6 +133,7 @@ ensemble_model_combinations <- samples_retrospective |>
   dplyr::collect()
 
 models_regex <- unique(ensemble_model_combinations$model) |>
+  c("ensemble_matched") |>
   stringr::str_flatten(collapse = "|")
 
 
@@ -154,7 +163,7 @@ ensembles_long <- ensembles |>
 
 message("scoring forecasts")
 
-scoring_s3_root <- "PATH REDACTED"
+scoring_s3_root <- "REDACTED"
 
 s3fs::s3_dir_create(scoring_s3_root)
 
@@ -172,7 +181,9 @@ ensembles_s3_scoring <- ensemble_identifiers |>
       \(.model, .disease) {
         s3_path <- glue::glue("{scoring_s3_root}/{.disease}-{.model}.rds")
 
-        if (s3fs::s3_file_exists(s3_path) & isFALSE(force_write)) {
+        do_not_compute <- s3fs::s3_file_exists(s3_path) & isFALSE(force_write)
+
+        if (do_not_compute) {
           return(s3_path)
         } # don't want to rerun analysis
 

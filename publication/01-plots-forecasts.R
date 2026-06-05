@@ -24,13 +24,23 @@ deps_$need(
 
 library(patchwork)
 
-ggplot2::theme_set(projection_plots$theme_pancasts())
+ggplot2::theme_set(
+  projection_plots$theme_pancasts() +
+    ggplot2::theme(
+      plot.title = ggplot2::element_text(size = 12),
+      text = ggplot2::element_text(size = 10)
+    )
+)
 
 source(here::here("evaluation/helpers.R"))
-plot_output_dir <- fs::dir_create(
-  here::here("publication/plots")
-)
+plot_output_dir <- fs::dir_create(here::here("publication/plots"))
+plot_output_dir_tiff <- fs::dir_create(here::here(plot_output_dir, "tiff"))
+plot_supplement_dir_tiff <- fs::dir_create(here::here(plot_output_dir_tiff, "supplement"))
+
+# data output dir
+fs::dir_create(here::here("publication/data"))
 # Load data ----
+use_downloaded_data <- TRUE
 
 ## production forecasts ----
 
@@ -53,6 +63,7 @@ samples <- dplyr::tbl(redshift$connect(use_existing = FALSE), I("REDACTED")) |>
   )
 
 summary <- dplyr::tbl(redshift$connect(use_existing = FALSE), I("REDACTED")) |>
+  dplyr::select(-c("pi_2.5", "pi_97.5", "pi_17", "pi_83")) |>
   dplyr::filter(disease %in% c("influenza", "covid-19")) |>
   # applying same model_date fix as for samples for same reasons
   dplyr::mutate(
@@ -70,6 +81,7 @@ summary <- dplyr::tbl(redshift$connect(use_existing = FALSE), I("REDACTED")) |>
   identify_ensemble_inclusion()
 
 
+observed <- redshift$data_model("pancasts")$pancasts_combined
 observed <- redshift$data_model("REDACTED")$REDACTED
 lookups <- redshift$data_model("REDACTED")
 
@@ -80,9 +92,8 @@ lookups <- redshift$data_model("REDACTED")
 samples_retrospective <- dplyr::tbl(redshift$connect(use_existing = FALSE), I("REDACTED")) |>
   dplyr::filter(disease %in% c("influenza", "covid-19"))
 summary_retrospective <- dplyr::tbl(redshift$connect(use_existing = FALSE), I("REDACTED")) |>
-  dplyr::filter(
-    disease %in% c("influenza", "covid-19")
-  )
+  dplyr::select(-c("pi_2.5", "pi_97.5", "pi_17", "pi_83")) |>
+  dplyr::filter(disease %in% c("influenza", "covid-19"))
 
 
 # useful dates ----
@@ -287,7 +298,6 @@ admissions_summary_plot <- admissions_summary |>
     ggplot2::aes(x = date, y = observed_target),
     size = 0.3
   ) +
-  # ggplot2::scale_fill_manual(values = probability_colours) +
   ggplot2::facet_wrap(
     ggplot2::vars(disease),
     scale = "free_y",
@@ -311,6 +321,239 @@ ggplot2::ggsave(
   plot = admissions_summary_plot,
   width = 16,
   height = 12
+)
+
+## plot at region level
+
+admissions_summary_region <- scoring_ready |>
+  dplyr::filter(
+    metric == "admissions",
+    location_level == "region",
+    age_group == "all",
+    grepl("ensemble|tp|gp|nowcast", model),
+    date >= prediction_start_date,
+    model_date > "2024-09-01"
+  ) |>
+  dplyr::slice_max(prediction_start_date, by = c(model_date, disease, metric), na_rm = TRUE) |>
+  dplyr::mutate(disease = stringr::str_remove(disease, "-19")) |>
+  dplyr::collect() |>
+  # grab single-model "ensembles" and ensembles - hard to do with SQL :(
+  dplyr::mutate(n_models = dplyr::n_distinct(model), .by = c(model_date, disease, metric)) |>
+  dplyr::filter(grepl("ensemble", model) | n_models == 1) |>
+  dplyr::right_join(
+    observed_by_geography |>
+      dplyr::filter(
+        metric == "admissions",
+        age_group == "all",
+        location_level == "region",
+        age_group == "all",
+        date >= plot_start_date
+      ),
+    by = c("date", "location", "location_level", "metric", "disease", "age_group")
+  )
+
+observed_admissions_region <- admissions_summary_region |>
+  dplyr::filter(
+    date >= min(prediction_dates),
+    date <= max(prediction_dates),
+    disease %in% c("covid", "influenza")
+  ) |>
+  dplyr::mutate(
+    location_level = dplyr::case_when(
+      location_level == "icb" ~ "ICB",
+      location_level == "region" ~ "Region"
+    ),
+    disease = disease_facet_labels(disease)
+  )
+
+admissions_region_plot <- admissions_summary_region |>
+  dplyr::filter(model == "ensemble_stack" | n_models == 1) |>
+  dplyr::filter(
+    disease %in% c("covid", "influenza"),
+    date <= plotting_end_date
+  ) |>
+  tidyr::pivot_wider(
+    names_from = quantile_level,
+    values_from = predicted,
+    names_glue = "pi_{100 * quantile_level}"
+  ) |>
+  dplyr::left_join(trend_probs, by = c("disease", "prediction_start_date")) |>
+  dplyr::mutate(
+    location_level = dplyr::case_when(
+      location_level == "icb" ~ "ICB",
+      location_level == "region" ~ "Region"
+    ),
+    disease = disease_facet_labels(disease)
+  ) |>
+  ggplot2::ggplot() +
+  ggplot2::geom_ribbon(
+    ggplot2::aes(
+      x = date,
+      ymin = pi_5,
+      ymax = pi_95,
+      group = prediction_start_date,
+      fill = as.factor(prediction_start_date)
+    ),
+    alpha = 0.25
+  ) +
+  ggplot2::geom_line(
+    ggplot2::aes(x = date, y = pi_50, group = prediction_start_date, colour = as.factor(prediction_start_date))
+  ) +
+  ggplot2::geom_point(
+    data = observed_admissions_region,
+    mapping = ggplot2::aes(x = date, y = observed_target),
+    size = 0.1
+  ) +
+  ggplot2::facet_grid(
+    ggplot2::vars(disease),
+    ggplot2::vars(location),
+    scale = "free_y",
+    labeller = ggplot2::label_wrap_gen(20)
+  ) +
+  ggplot2::labs(
+    x = "Prediction start date",
+    y = "Admissions"
+  ) +
+  ggplot2::ggtitle(
+    "Regional forecasts for daily admissions of respiratory diseases",
+    subtitle = "Colour indicates prediction start date."
+  ) +
+  ggplot2::scale_x_date(date_labels = "%b", date_breaks = "1 month") +
+  ggplot2::theme(legend.position = "none", axis.text.x = ggplot2::element_text(size = 8, angle = 90, vjust = 1))
+
+admissions_region_plot
+
+ggplot2::ggsave(
+  filename = here::here(plot_output_dir, "SUPPLEMENT_admissions_summary_region.png"),
+  plot = admissions_region_plot,
+  width = 16,
+  height = 8
+)
+
+## plot at icb level
+n_icb <- 4
+unique_icbs <- scoring_ready |>
+  dplyr::filter(location_level == "icb") |>
+  dplyr::distinct(location) |>
+  dplyr::pull(location)
+
+chosen_icbs <- withr::with_seed(seed = "REDACTED", code = {
+  sample(unique_icbs, n_icb, replace = FALSE)
+})
+
+icb_labels <- tibble::tibble(icb_label = chosen_icbs) |>
+  dplyr::mutate(
+    .row = dplyr::row_number(),
+    letter = LETTERS[.row],
+    icb_anon = glue::glue("ICB {letter}")
+  ) |>
+  dplyr::select(icb_label, icb_anon)
+
+admissions_summary_icb <- scoring_ready |>
+  dplyr::filter(
+    metric == "admissions",
+    location_level == "icb",
+    age_group == "all",
+    grepl("ensemble|tp|gp|nowcast", model),
+    date >= prediction_start_date,
+    model_date > "2024-09-01",
+    location %in% chosen_icbs
+  ) |>
+  dplyr::slice_max(prediction_start_date, by = c(model_date, disease, metric), na_rm = TRUE) |>
+  dplyr::mutate(disease = stringr::str_remove(disease, "-19")) |>
+  dplyr::collect() |>
+  # grab single-model "ensembles" and ensembles - hard to do with SQL :(
+  dplyr::mutate(n_models = dplyr::n_distinct(model), .by = c(model_date, disease, metric)) |>
+  dplyr::filter(grepl("ensemble", model) | n_models == 1) |>
+  dplyr::right_join(
+    observed_by_geography |>
+      dplyr::filter(
+        metric == "admissions",
+        age_group == "all",
+        location_level == "icb",
+        age_group == "all",
+        date >= plot_start_date,
+        location %in% chosen_icbs
+      ),
+    by = c("date", "location", "location_level", "metric", "disease", "age_group")
+  )
+
+observed_admissions_icb <- admissions_summary_icb |>
+  dplyr::filter(
+    date >= min(prediction_dates),
+    date <= max(prediction_dates),
+    disease %in% c("covid", "influenza")
+  ) |>
+  dplyr::mutate(
+    location_level = dplyr::case_when(
+      location_level == "icb" ~ "ICB",
+      location_level == "region" ~ "Region"
+    ),
+    disease = disease_facet_labels(disease)
+  )
+
+admissions_icb_plot <- admissions_summary_icb |>
+  dplyr::filter(model == "ensemble_stack" | n_models == 1) |>
+  dplyr::filter(
+    disease %in% c("covid", "influenza"),
+    date <= plotting_end_date
+  ) |>
+  tidyr::pivot_wider(
+    names_from = quantile_level,
+    values_from = predicted,
+    names_glue = "pi_{100 * quantile_level}"
+  ) |>
+  dplyr::left_join(trend_probs, by = c("disease", "prediction_start_date")) |>
+  dplyr::mutate(
+    location_level = dplyr::case_when(
+      location_level == "icb" ~ "ICB",
+      location_level == "region" ~ "Region"
+    ),
+    disease = disease_facet_labels(disease)
+  ) |>
+  dplyr::left_join(icb_labels, dplyr::join_by(location == icb_label)) |>
+  ggplot2::ggplot() +
+  ggplot2::geom_ribbon(
+    ggplot2::aes(
+      x = date,
+      ymin = pi_5,
+      ymax = pi_95,
+      group = prediction_start_date,
+      fill = as.factor(prediction_start_date)
+    ),
+    alpha = 0.25
+  ) +
+  ggplot2::geom_line(
+    ggplot2::aes(x = date, y = pi_50, group = prediction_start_date, colour = as.factor(prediction_start_date))
+  ) +
+  ggplot2::geom_point(
+    data = observed_admissions_icb |>
+      dplyr::left_join(icb_labels, dplyr::join_by(location == icb_label)),
+    mapping = ggplot2::aes(x = date, y = observed_target),
+    size = 0.3
+  ) +
+  ggplot2::facet_grid(
+    ggplot2::vars(disease),
+    ggplot2::vars(icb_anon),
+    scale = "free_y"
+  ) +
+  ggplot2::labs(
+    x = "Prediction start date",
+    y = "Admissions"
+  ) +
+  ggplot2::ggtitle(
+    "ICB level forecasts for daily admissions of respiratory diseases",
+    subtitle = "Colour indicates prediction start date."
+  ) +
+  ggplot2::theme(legend.position = "none")
+
+admissions_icb_plot
+
+ggplot2::ggsave(
+  filename = here::here(plot_output_dir, "SUPPLEMENT_admissions_summary_icb.png"),
+  plot = admissions_icb_plot,
+  width = 12,
+  height = 8
 )
 
 ## scores ----
@@ -605,37 +848,55 @@ forecasts <- summary |> # pull known stored results
   ) |>
   dplyr::ungroup()
 
-models_used <- forecasts |>
-  dplyr::filter(metric == "admissions") |>
-  dplyr::mutate(
-    individual_models = purrr::map(
-      samples,
-      \(x) {
-        x |>
-          dplyr::distinct(model) |>
-          dplyr::pull(model)
-      }
-    ),
-    ensemble_string = purrr::map(
-      summary,
-      \(x) {
-        x |>
-          dplyr::distinct(model) |>
-          dplyr::filter(stringr::str_detect(model, "ensemble")) |>
-          dplyr::pull(model)
-      }
-    ),
-    .by = c("disease", "metric")
-  ) |>
-  dplyr::select(
-    upload_date,
-    individual_models,
-    ensemble_string,
-    disease,
-    metric
-  ) |>
+model_ensemble_name_path <- here::here("publication/data/models_ensembles.rds")
+
+# conditionally run query - can easily take > 1 hr so a local copy speeds up
+
+if (isTRUE(fs::file_exists(model_ensemble_name_path)) && isTRUE(use_downloaded_data)) {
+  models_and_ensembles <- readr::read_rds(model_ensemble_name_path)
+} else {
+  models_and_ensembles <- forecasts |>
+    dplyr::filter(metric == "admissions") |>
+    dplyr::mutate(
+      individual_models = purrr::map(
+        samples,
+        \(x) {
+          x |>
+            dplyr::distinct(model) |>
+            dplyr::pull(model)
+        },
+        .progress = "samples"
+      ),
+      ensemble_string = purrr::map(
+        summary,
+        \(x) {
+          x |>
+            dplyr::distinct(model) |>
+            dplyr::filter(stringr::str_detect(model, "ensemble")) |>
+            dplyr::pull(model)
+        },
+        .progress = "summary"
+      ),
+      .by = c("disease", "metric")
+    ) |>
+    dplyr::select(
+      upload_date,
+      individual_models,
+      ensemble_string,
+      disease,
+      metric
+    )
+
+  readr::write_rds(models_and_ensembles, model_ensemble_name_path)
+}
+
+
+models_used <- models_and_ensembles |>
   tidyr::unnest(c(individual_models, ensemble_string)) |>
-  dplyr::mutate(individual_models = dplyr::na_if(individual_models, "")) |>
+  dplyr::mutate(
+    individual_models = stringr::str_trim(individual_models),
+    individual_models = dplyr::na_if(individual_models, "")
+  ) |>
   tidyr::drop_na(individual_models) |> # now removes empty strings
   dplyr::mutate(
     model_in_ensemble = stringr::str_detect(
@@ -652,7 +913,7 @@ models_used <- forecasts |>
   ) |>
   dplyr::group_by(individual_models, metric, disease) |>
   # drop when not all false
-  dplyr::filter(!any(model_in_ensemble)) |>
+  dplyr::filter(any(model_in_ensemble)) |>
   dplyr::ungroup() |>
   dplyr::arrange(upload_date) |>
   # working out the first time a model was used in an ensemble
@@ -673,7 +934,7 @@ upload_date_breaks <- models_used |>
 # No false is being shown?
 models_used_plot <- models_used |>
   dplyr::filter(upload_date <= plotting_end_date) |>
-  dplyr::mutate(tile_width = 4) |>
+  dplyr::mutate(tile_width = 6) |>
   dplyr::mutate(model_in_ensemble = dplyr::if_else(model_in_ensemble, "Yes", "No")) |>
   dplyr::left_join(model_code_to_name, by = dplyr::join_by(individual_models == name)) |>
   tidyr::drop_na(individual_models, full_name) |>
@@ -687,7 +948,7 @@ models_used_plot <- models_used |>
   ggplot2::geom_tile(
     ggplot2::aes(width = tile_width),
     colour = "white",
-    linewidth = 3
+    linewidth = 0.5
   ) +
   ggplot2::labs(
     y = "Model name",
@@ -718,9 +979,13 @@ models_used_plot <- models_used |>
   ggplot2::scale_y_discrete(labels = \(.str) stringr::str_wrap(.str, width = 10)) +
   ggplot2::theme(
     panel.grid = ggplot2::element_blank(),
-    axis.text.y = ggplot2::element_text(angle = 45, hjust = 0.5),
+    axis.text.y = ggplot2::element_text(hjust = 0.5, size = 6),
+    legend.title = ggplot2::element_text(size = 14),
+    legend.text = ggplot2::element_text(size = 12),
     legend.position = "bottom"
   )
+
+models_used_plot
 
 ggplot2::ggsave(
   filename = here::here(plot_output_dir, "models_used.png"),
@@ -729,7 +994,9 @@ ggplot2::ggsave(
   height = 12
 )
 
-combined_plots <- admissions_summary_plot / models_used_plot + patchwork::plot_layout(heights = c(3, 2))
+models_used_plot
+
+combined_plots <- admissions_summary_plot / models_used_plot
 
 ggplot2::ggsave(
   filename = here::here(plot_output_dir, "admissions_models_combined.png"),
@@ -738,18 +1005,32 @@ ggplot2::ggsave(
   height = 12
 )
 
+ggplot2::ggsave(
+  filename = here::here(plot_output_dir_tiff, "fig_1.tiff"),
+  plot = combined_plots,
+  width = 19,
+  height = 19,
+  dpi = 300,
+  units = "cm"
+)
+
 
 ## retrospective score plots ----
 
 ## load in scored ensembles
 
-scoring_s3_root <- "PATH REDACTED"
-scoring_s3_root_ordinal <- "PATH REDACTED"
+scoring_s3_root <- "REDACTED"
+scoring_s3_root_ordinal <- "REDACTED"
 
 ensembles_scored <- tibble::tibble(
   s3_path = s3fs::s3_dir_ls(scoring_s3_root)
 ) |>
-  dplyr::mutate(data = purrr::map(s3_path, \(fpath) s3$read_using(fpath, fn = readRDS))) |>
+  dplyr::mutate(
+    data = purrr::map(
+      s3_path,
+      \(fpath) s3$read_using(fpath, fn = readRDS) |> dplyr::mutate(model_date = as.Date(model_date))
+    )
+  ) |>
   tidyr::unnest(data) |>
   dplyr::select(-s3_path) |>
   # was created post-season, and trained on 24/25 season, biases results
@@ -759,7 +1040,12 @@ ensembles_scored <- tibble::tibble(
 rps_scored <- tibble::tibble(
   s3_path = s3fs::s3_dir_ls(scoring_s3_root_ordinal)
 ) |>
-  dplyr::mutate(data = purrr::map(s3_path, \(fpath) s3$read_using(fpath, fn = readRDS))) |>
+  dplyr::mutate(
+    data = purrr::map(
+      s3_path,
+      \(fpath) s3$read_using(fpath, fn = readRDS) |> dplyr::mutate(model_date = as.Date(model_date))
+    )
+  ) |>
   tidyr::unnest(data) |>
   dplyr::select(-s3_path) |>
   # was created post-season, and trained on 24/25 season, biases results
@@ -778,10 +1064,11 @@ retrospective_ensemble_scores <- rps_scored |>
       "age_group_granularity",
       "date",
       "disease",
-      "population",
       "metric"
-    )
+    ),
+    suffix = c("_rps", "_wis")
   ) |>
+  dplyr::mutate(population = population_rps) |>
   dplyr::filter(
     disease %in% c("covid-19", "influenza"),
     location == "England"
@@ -791,11 +1078,11 @@ retrospective_ensemble_scores <- rps_scored |>
     names_to = "metric_name",
     values_to = "metric_value"
   ) |>
-  dplyr::mutate(model_type = "Ensemble")
+  dplyr::mutate(model_type = dplyr::if_else(model == "ensemble_matched", "Matched Ensemble", "Sub-Ensemble"))
 
 individual_retrospective_scores <- dplyr::bind_rows(
   s3$read_using(
-    "PATH REDACTED",
+    "REDACTED",
     readRDS
   ) |>
     dplyr::filter(scale == "per_capita") |>
@@ -803,7 +1090,7 @@ individual_retrospective_scores <- dplyr::bind_rows(
     dplyr::rename("metric_value" = wis),
 
   s3$read_using(
-    "PATH REDACTED",
+    "REDACTED",
     readRDS
   ) |>
     dplyr::mutate(metric_name = "rps") |>
@@ -830,121 +1117,18 @@ published_model_scores <- dplyr::bind_rows(
     values_to = "metric_value"
   ) |>
   tidyr::drop_na(metric_value) |>
-  dplyr::mutate(model_type = "Operational")
-
-
-retro_scores_comparison <- dplyr::bind_rows(
-  individual_retrospective_scores |>
-    dplyr::mutate(model_date = as.Date(model_date)),
-  retrospective_ensemble_scores,
-  published_model_scores
-) |>
-  dplyr::filter(
-    prediction_start_date <= "2025-05-01"
-  ) |>
-  # add a gap for no forecasts over christmas/new year period
-  dplyr::bind_rows(
-    tibble::tibble(
-      model_type = rep("Operational", 4),
-      prediction_start_date = rep(as.Date("2024-12-25"), 4),
-      model = rep("ensemble_stack", 4),
-      metric_value = rep(NA_real_, 4),
-      metric_name = c("rps", "rps", "wis", "wis"),
-      disease = c("covid-19", "influenza", "covid-19", "influenza")
-    )
-  ) |>
-  dplyr::arrange(prediction_start_date)
-
-published_min_date <- retro_scores_comparison |>
-  dplyr::filter(model == "ensemble_stack") |>
-  dplyr::summarise(min_psd = min(prediction_start_date), .by = "disease")
-
-retro_scores_comparison_plot <- retro_scores_comparison |>
-  dplyr::left_join(published_min_date, by = "disease") |>
-  dplyr::filter(prediction_start_date >= min_psd) |>
-  dplyr::summarise(
-    metric_value = mean(metric_value, na.rm = TRUE),
-    .by = c("model", "prediction_start_date", "model_type", "disease", "metric_name")
-  ) |>
-  dplyr::mutate(metric_value = dplyr::if_else(metric_name == "wis", log(metric_value), metric_value)) |>
-  dplyr::mutate(
-    model_type = ordered(model_type, levels = c("Individual", "Ensemble", "Operational"))
-  ) |>
-  dplyr::group_split(metric_name) |>
-  purrr::map(
-    \(input_df) {
-      chosen_metric <- dplyr::if_else(unique(input_df$metric_name) == "wis", "pcWIS", "RPS")
-      metric_lab <- dplyr::if_else(chosen_metric == "RPS", "RPS", "log(pcWIS)")
-      input_df <- dplyr::mutate(
-        input_df,
-        disease = dplyr::if_else(disease == "covid-19", "COVID-19", "Influenza")
-      )
-
-      input_df |>
-        dplyr::arrange(prediction_start_date, model) |>
-        ggplot2::ggplot(
-          ggplot2::aes(
-            x = prediction_start_date,
-            y = metric_value,
-            colour = model_type,
-            group = model,
-            linewidth = model_type
-          )
-        ) +
-        ggplot2::geom_line() +
-        ggplot2::geom_line(
-          data = dplyr::filter(input_df, model_type == "Operational"),
-          mapping = ggplot2::aes(x = prediction_start_date, y = metric_value, colour = model_type, group = model)
-        ) +
-        ggplot2::scale_colour_manual(
-          values = c(
-            "Ensemble" = "#134074",
-            "Individual" = "#bfab25",
-            "Operational" = "#df2935"
-          )
-        ) +
-        ggplot2::ylab(metric_lab) +
-        ggplot2::xlab("Prediction start date") +
-        ggplot2::ggtitle("", subtitle = glue::glue("{metric_lab} by prediction start date")) +
-        ggplot2::scale_linewidth_manual(
-          values = c("Ensemble" = 0.25, "Individual" = 0.25, "Operational" = 1.2),
-          guide = "none"
-        ) +
-        ggplot2::labs(colour = "Model type") +
-        ggplot2::facet_grid(ggplot2::vars(disease), scales = "free_y") +
-        ggplot2::theme(plot.title = ggplot2::element_blank())
-    }
-  ) |>
-  rev() |> # puts pcWIs on top
-  patchwork::wrap_plots(ncol = 1) +
-  patchwork::plot_annotation(
-    "Comparison of retrospective models and ensembles to operational forecasts",
-    "All scores are for national georaphy"
-  ) +
-  patchwork::plot_layout(
-    guides = "collect",
-    axis = "collect_x"
-  )
-
-retro_scores_comparison_plot
-
-ggplot2::ggsave(
-  here::here(plot_output_dir, "retrospective_to_ensemble_comparison.png"),
-  retro_scores_comparison_plot,
-  width = 16,
-  height = 12
-)
+  dplyr::mutate(model_type = "Operational Ensemble")
 
 
 ## gam scores plots ----
 
 #### covid - pcwis ----
 
-scoring_s3_root <- "PATH REDACTED"
+scoring_s3_root <- "REDACTED"
 
 individual_models <- dplyr::tbl(
   redshift$connect(use_existing = FALSE),
-  I("pancasts_glue.samples_eval2425")
+  I("REDACTED")
 ) |>
   dplyr::distinct(model) |>
   dplyr::filter(model != "") |>
@@ -1002,19 +1186,35 @@ covid_data <- scores_summarised |>
   )
 
 # fit model with a standard seed
+k <- 0.5 * floor(max(covid_data$t_ / 7))
+
 wis_gam_covid <- withr::with_seed(
   seed = 404,
   {
     mgcv::gam(
-      target ~ s(t_, bs = "ts") +
-        s(t_, by = model, bs = "ts") +
+      target ~ s(t_, bs = "ts", k = k) +
+        s(t_, by = model, bs = "ts", k = k) +
         s(model, bs = "re") +
-        s(t_, by = location_level, bs = "ts") +
+        s(t_, by = location_level, bs = "ts", k = k) +
         s(location_level, bs = "re"),
       data = covid_data
     )
   }
 )
+
+# gam diagnostics plot
+
+wis_gam_covid_diagnostics <- wis_gam_covid |>
+  generate_gam_diagnostics() +
+  patchwork::plot_annotation(title = "Diagnostics plots: pcWIS COVID-19")
+
+ggplot2::ggsave(
+  filename = here::here(plot_output_dir, "SUPPLEMENT_wis_gam_covid.png"),
+  plot = wis_gam_covid_diagnostics,
+  width = 16,
+  height = 12
+)
+
 
 posterior_samples <- generate_samples_fitted(covid_data, wis_gam_covid, .n_pi_samples = 1000, method = "mh") |>
   dplyr::mutate(.value = exp(.value))
@@ -1179,14 +1379,27 @@ covid_data <- scores_summarised |>
     model = as.factor(model)
   )
 
+k <- 0.5 * max(covid_data$t_ / 7)
+
 rps_gam_covid <- mgcv::gam(
   target ~
-    s(t_, bs = "ts") +
-    s(t_, by = model, bs = "ts") +
+    s(t_, bs = "ts", k = k) +
+    s(t_, by = model, bs = "ts", k = k) +
     s(model, bs = "re") +
-    s(t_, by = location_level, bs = "ts") +
+    s(t_, by = location_level, bs = "ts", k = k) +
     s(location_level, bs = "re"),
   data = covid_data
+)
+
+rps_gam_covid_diagnostics <- rps_gam_covid |>
+  generate_gam_diagnostics() +
+  patchwork::plot_annotation(title = "Diagnostics plots: RPS COVID-19")
+
+ggplot2::ggsave(
+  filename = here::here(plot_output_dir, "SUPPLEMENT_rps_gam_covid.png"),
+  plot = rps_gam_covid_diagnostics,
+  width = 16,
+  height = 12
 )
 
 rps_gam_covid_aug <- broom::augment(rps_gam_covid)
@@ -1333,13 +1546,26 @@ influenza_data <- scores_summarised |>
     model = as.factor(model)
   )
 
+k <- floor(0.5 * max(influenza_data$t_ / 7))
+
 wis_gam_influenza <- mgcv::gam(
-  target ~ s(t_, bs = "ts") +
-    s(t_, by = model, bs = "ts") +
+  target ~ s(t_, bs = "ts", k = k) +
+    s(t_, by = model, bs = "ts", k = k) +
     s(model, bs = "re") +
-    s(t_, by = location_level, bs = "ts") +
+    s(t_, by = location_level, bs = "ts", k = k) +
     s(location_level, bs = "re"),
   data = influenza_data
+)
+
+wis_gam_influenza_diagnostics <- wis_gam_influenza |>
+  generate_gam_diagnostics() +
+  patchwork::plot_annotation(title = "Diagnostics plots: pcWIS Influenza")
+
+ggplot2::ggsave(
+  filename = here::here(plot_output_dir, "SUPPLEMENT_wis_gam_influenza.png"),
+  plot = wis_gam_influenza_diagnostics,
+  width = 16,
+  height = 12
 )
 
 wis_gam_influenza_aug <- broom::augment(wis_gam_influenza)
@@ -1443,7 +1669,7 @@ influenza_pcwis_mean_model_effect <- mean_model_prediction |>
 
 #### infuenza - rps ----
 
-zero_offset <- 1e-10 # to avoid log(0) in any gam pre-processing
+zero_offset <- 1e-6 # to avoid log(0) in any gam pre-processing
 
 scores <- tibble::tibble(
   s3_path = s3fs::s3_dir_ls(scoring_s3_root_ordinal)
@@ -1489,14 +1715,27 @@ influenza_data <- scores_summarised |>
     model = as.factor(model)
   )
 
+k <- floor(0.5 * max(influenza_data$t_ / 7))
+
 rps_gam_influenza <- mgcv::gam(
   target ~
-    s(t_, bs = "ts") +
-    s(t_, by = model, bs = "ts") +
+    s(t_, bs = "ts", k = k) +
+    s(t_, by = model, bs = "ts", k = k) +
     s(model, bs = "re") +
-    s(t_, by = location_level, bs = "ts") +
+    s(t_, by = location_level, bs = "ts", k = k) +
     s(location_level, bs = "re"),
   data = influenza_data
+)
+
+rps_gam_influenza_diagnostics <- rps_gam_influenza |>
+  generate_gam_diagnostics() +
+  patchwork::plot_annotation(title = "Diagnostics plots: RPS Influenza")
+
+ggplot2::ggsave(
+  filename = here::here(plot_output_dir, "SUPPLEMENT_rps_gam_influenza.png"),
+  plot = rps_gam_influenza_diagnostics,
+  width = 16,
+  height = 12
 )
 
 rps_gam_influenza_aug <- broom::augment(rps_gam_influenza)
@@ -1642,7 +1881,8 @@ mean_effect_plots <- all_mean_model_effect |>
         plot_title <- glue::glue(
           "Average effect scoring rules induced including a model in an ensemble of size three for {chosen_disease}",
           chosen_disease = dplyr::if_else(unique(df$disease_copy) == "covid-19", "COVID-19", "Influenza")
-        )
+        ) |>
+          stringr::str_wrap(70)
 
         df |>
           dplyr::left_join(model_code_to_name, by = dplyr::join_by(name)) |>
@@ -1668,21 +1908,36 @@ mean_effect_plots <- all_mean_model_effect |>
             y = "Percentage difference from mean score\n(negative implies improvement)"
           ) +
           ggplot2::scale_y_continuous(labels = scales::percent) +
-          ggplot2::theme(legend.position = "none") +
+          ggplot2::theme(legend.position = "none", axis.text.x = ggplot2::element_text(size = 6)) +
           ggplot2::facet_grid(ggplot2::vars(score), ggplot2::vars(full_name), scales = "free_y")
       }
     ),
     .by = "disease"
+  ) |>
+  dplyr::mutate(
+    #  hardcoded - will need to change if figures change
+    figure_number = 3:4
   )
 
 purrr::pwalk(
   mean_effect_plots,
-  \(disease, data, plt) {
+  \(disease, data, plt, figure_number) {
     ggplot2::ggsave(
       filename = here::here(plot_output_dir, glue::glue("{disease}_percent_change.png")),
       plot = plt,
       width = 16,
       height = 12
+    )
+
+    fname <- glue::glue("fig_{figure_number}.tiff")
+
+    ggplot2::ggsave(
+      filename = here::here(plot_output_dir_tiff, fname),
+      plot = plt,
+      width = 19,
+      height = 14.25,
+      dpi = 300,
+      units = "cm"
     )
   }
 )
@@ -1713,12 +1968,12 @@ covid_individual <- covid_influenza_summary |>
       ymin = pi_5,
       ymax = pi_95,
       group = prediction_start_date,
-      fill = as.factor(prediction_start_date),
-      alpha = 0.3
+      fill = as.factor(prediction_start_date)
     ),
+    alpha = 0.25
   ) +
   ggplot2::geom_line(
-    ggplot2::aes(x = date, y = pi_50, group = prediction_start_date)
+    ggplot2::aes(x = date, y = pi_50, group = prediction_start_date, colour = as.factor(prediction_start_date))
   ) +
   ggplot2::geom_point(ggplot2::aes(x = date, y = target_value)) +
   ggplot2::facet_wrap(ggplot2::vars(model), ncol = 3) +
@@ -1731,7 +1986,12 @@ covid_individual <- covid_influenza_summary |>
     "Retrospective COVID-19 forecasts",
     "Individual COVID-19 admissions forecasts at national geography by prediction start date"
   ) +
-  ggplot2::theme(legend.position = "none")
+  ggplot2::theme(
+    legend.position = "none",
+    strip.text.x = ggplot2::element_text(size = 16),
+    plot.title = ggplot2::element_text(size = 18),
+    plot.subtitle = ggplot2::element_text(size = 16)
+  )
 
 ggplot2::ggsave(
   filename = here::here(plot_output_dir, "SUPPLEMENT_covid_retrospective.png"),
@@ -1755,12 +2015,12 @@ influenza_individual <- covid_influenza_summary |>
       ymin = pi_5,
       ymax = pi_95,
       group = prediction_start_date,
-      fill = as.factor(prediction_start_date),
-      alpha = 0.3
+      fill = as.factor(prediction_start_date)
     ),
+    alpha = 0.25
   ) +
   ggplot2::geom_line(
-    ggplot2::aes(x = date, y = pi_50, group = prediction_start_date)
+    ggplot2::aes(x = date, y = pi_50, group = prediction_start_date, colour = as.factor(prediction_start_date))
   ) +
   ggplot2::geom_point(ggplot2::aes(x = date, y = target_value)) +
   ggplot2::facet_wrap(ggplot2::vars(model), ncol = 3) +
@@ -1773,7 +2033,12 @@ influenza_individual <- covid_influenza_summary |>
     "Retrospective influenza forecasts",
     "Individual Influenza admissions forecasts at national geography by prediction start date"
   ) +
-  ggplot2::theme(legend.position = "none")
+  ggplot2::theme(
+    legend.position = "none",
+    strip.text.x = ggplot2::element_text(size = 16),
+    plot.title = ggplot2::element_text(size = 18),
+    plot.subtitle = ggplot2::element_text(size = 16)
+  )
 
 ggplot2::ggsave(
   filename = here::here(plot_output_dir, "SUPPLEMENT_influenza_retrospective.png"),
@@ -1781,7 +2046,6 @@ ggplot2::ggsave(
   width = 16,
   height = 12
 )
-
 # Quick calculation: predictive interval coverage 90% and 90%
 
 coverage_statistics <- summary_retrospective |>
@@ -1818,7 +2082,35 @@ coverage_statistics
 
 ## mean scores over season
 
-first_psd_disease <- retro_scores_comparison_plot$data |>
+retro_scores_comparison <- dplyr::bind_rows(
+  individual_retrospective_scores |>
+    dplyr::mutate(model_date = as.Date(model_date)),
+  retrospective_ensemble_scores,
+  published_model_scores
+) |>
+  dplyr::group_by(disease, model, metric_name) |>
+  dplyr::arrange(prediction_start_date) |>
+  dplyr::filter(
+    prediction_start_date <= "2025-05-01",
+    lubridate::wday(prediction_start_date, label = TRUE) != "Wed"
+  ) |>
+  dplyr::mutate(diff = prediction_start_date - dplyr::lag(prediction_start_date)) |>
+  dplyr::rowwise() |>
+  dplyr::filter(isFALSE(diff < 2) | is.na(diff)) |>
+  dplyr::ungroup() |>
+  # add a gap for no forecasts over christmas/new year period
+  dplyr::bind_rows(
+    tibble::tibble(
+      model_type = rep("Operational Ensemble", 4),
+      prediction_start_date = rep(as.Date("2024-12-25"), 4),
+      model = rep("ensemble_stack", 4),
+      metric_value = rep(NA_real_, 4),
+      metric_name = c("rps", "rps", "wis", "wis"),
+      disease = c("covid-19", "influenza", "covid-19", "influenza")
+    )
+  )
+
+first_psd_disease <- retro_scores_comparison |>
   dplyr::summarise(min_psd = min(prediction_start_date), .by = disease) |>
   dplyr::mutate(disease = tolower(disease))
 
@@ -1860,7 +2152,7 @@ reported_mean_scores
 retro_mean_scores <- retro_scores_comparison |>
   dplyr::left_join(first_psd_disease, by = "disease") |>
   dplyr::filter(
-    model_type == "Ensemble",
+    model_type == "Operational Ensemble",
     prediction_start_date >= min_psd
   ) |>
   dplyr::mutate(scale = dplyr::coalesce(scale, "natural")) |>
@@ -1938,16 +2230,12 @@ holiday_period_admissions <- dplyr::bind_rows(
     by = c("disease", "prediction_start_date" = "date")
   )
 
-
-normalised_admissions <- observed_admissions |>
-  dplyr::slice_max(date, by = c("disease", "prediction_start_date")) |>
-  dplyr::select(disease, prediction_start_date, observed_target) |>
-  dplyr::distinct() |>
-  dplyr::bind_rows(holiday_period_admissions) |>
-  dplyr::mutate(
-    observed_target = (observed_target - min(observed_target)) / (max(observed_target) - min(observed_target)),
-    .by = disease
-  )
+forecast_start_dates <- admissions_summary |>
+  dplyr::filter(disease %in% c("covid", "influenza")) |>
+  dplyr::slice_min(prediction_start_date, by = "disease", with_ties = FALSE) |>
+  dplyr::select(disease, prediction_start_date) |>
+  dplyr::mutate(disease = disease_facet_labels(disease)) |>
+  dplyr::rename("min_psd" = prediction_start_date)
 
 
 normalised_admissions <- observed_admissions |>
@@ -1967,7 +2255,7 @@ normalised_admissions <- observed_admissions |>
             disease == .disease,
             metric == "admissions",
             date <= .psd,
-            date > .psd - lubridate::days(14),
+            date > .psd - lubridate::days(7),
             age_group == "all",
             location_level == "nation"
           ) |>
@@ -1982,9 +2270,9 @@ normalised_admissions <- observed_admissions |>
     rolling_avg_normal = (rolling_avg - min(rolling_avg)) / (max(rolling_avg) - min(rolling_avg)),
     .by = disease
   ) |>
-  dplyr::mutate(
-    disease = disease_facet_labels(disease)
-  )
+  dplyr::mutate(disease = disease_facet_labels(disease)) |>
+  dplyr::left_join(forecast_start_dates, by = "disease") |>
+  dplyr::filter(prediction_start_date >= min_psd)
 
 trend_direction_data <- admissions_summary |>
   dplyr::filter(is_reported_model | n_models == 1) |>
@@ -2016,55 +2304,119 @@ trend_direction_data <- admissions_summary |>
     disease = disease_facet_labels(disease)
   )
 
-forecast_start_dates <- trend_direction_data |>
-  dplyr::slice_min(prediction_start_date, by = "disease", with_ties = FALSE) |>
-  dplyr::select(disease, prediction_start_date) |>
-  dplyr::rename("min_psd" = prediction_start_date)
-
-normalised_admissions <- normalised_admissions |>
-  dplyr::left_join(forecast_start_dates, by = "disease") |>
-  dplyr::filter(prediction_start_date >= min_psd)
-
+trend_dates <- trend_direction_data |>
+  dplyr::summarise(
+    start = min(prediction_start_date),
+    end = max(prediction_start_date),
+    .by = "disease"
+  )
 trend_direction_plot <- trend_direction_data |>
   ggplot2::ggplot() +
   ggplot2::geom_area(
     ggplot2::aes(fill = trend_direction, y = trend_probability, x = prediction_start_date),
     position = "fill"
   ) +
-  ggplot2::geom_line(
-    data = normalised_admissions,
-    ggplot2::aes(x = prediction_start_date, y = rolling_avg_normal, colour = "incidence")
-  ) +
-  ggplot2::geom_point(
-    data = normalised_admissions,
-    ggplot2::aes(x = prediction_start_date, y = rolling_avg_normal)
-  ) +
   ggplot2::scale_fill_manual(values = probability_colours) +
-  ggplot2::scale_colour_manual(values = c("incidence" = "black")) +
-  ggplot2::facet_wrap(ggplot2::vars(disease), ncol = 1) +
+  ggplot2::facet_wrap(ggplot2::vars(disease), ncol = 2) +
   ggplot2::labs(
     x = "Prediction start date",
-    y = "Trend direction probability / Normalised admissions",
+    y = "Trend direction probability",
     fill = "Trend direction",
     colour = ""
   ) +
   ggplot2::ggtitle(
     "Trend direction probabilities",
-    subtitle = "Colours indicate probability of a given direction.\n\nLine and dots are normalised admissions."
+    subtitle = "Colours indicate probability of a given direction."
   ) +
-  ggplot2::theme(legend.box = "vertical")
+  ggplot2::theme(legend.box = "vertical") +
+  ggplot2::scale_x_date(
+    limits = as.Date(c("2024-10-07", "2025-03-17"))
+  )
+
+# calculate true trend directions
+
+observed_trend <- ordinal_ready |>
+  tibble::tibble() |>
+  dplyr::left_join(published_min_date, by = "disease") |>
+  dplyr::filter(
+    date <= "2025-04-01", # arbitrary date after the season
+    date >= min_psd,
+    .by = "disease"
+  ) |>
+  dplyr::mutate(disease = disease_facet_labels(disease)) |>
+  dplyr::filter(model == "ensemble_mean", location_level == "nation") |>
+  dplyr::filter(
+    date == max(date),
+    .by = c("prediction_start_date", "disease")
+  ) |>
+  dplyr::distinct(observed, prediction_start_date, disease) |>
+  dplyr::arrange(prediction_start_date, .by = "disease")
+
+
+observed_trend <- ordinal_ready |>
+  tibble::tibble() |>
+  dplyr::mutate(disease = disease_facet_labels(disease)) |>
+
+  dplyr::left_join(trend_dates, by = "disease") |>
+  dplyr::filter(
+    prediction_start_date <= end, # arbitrary date after the season
+    prediction_start_date >= start,
+    .by = "disease"
+  ) |>
+  dplyr::mutate(disease = disease_facet_labels(disease)) |>
+  dplyr::filter(model == "ensemble_mean", location_level == "nation") |>
+  dplyr::filter(
+    date == max(date),
+    .by = c("prediction_start_date", "disease")
+  ) |>
+  dplyr::distinct(observed, prediction_start_date, disease) |>
+  dplyr::arrange(prediction_start_date, .by = "disease")
+
+
+observed_trend_plot <- observed_trend |>
+  ggplot2::ggplot() +
+  ggplot2::geom_tile(
+    ggplot2::aes(fill = observed, y = 1, x = prediction_start_date, width = 8),
+    position = "fill"
+  ) +
+  ggplot2::scale_fill_manual(values = probability_colours) +
+  ggplot2::facet_wrap(ggplot2::vars(disease), ncol = 2) +
+  ggplot2::labs(
+    x = "Prediction start date",
+    y = "Trend direction",
+    fill = "Trend direction"
+  ) +
+  ggplot2::ggtitle("", subtitle = "Observed trend direction") +
+  ggplot2::theme(
+    legend.position = "none",
+    axis.ticks.y = ggplot2::element_blank(),
+    axis.text.y = ggplot2::element_blank()
+  ) +
+  ggplot2::scale_x_date(
+    limits = as.Date(c("2024-10-07", "2025-03-17"))
+  )
+
+combined_trend_plot <- patchwork::wrap_plots(
+  trend_direction_plot,
+  observed_trend_plot,
+  ncol = 1
+) +
+  patchwork::plot_layout(
+    guides = "collect",
+    axis_titles = "collect",
+    heights = c(3, 2)
+  )
 
 ggplot2::ggsave(
   here::here(plot_output_dir, "SUPPLEMENT_trend_direction_probs.png"),
-  plot = trend_direction_plot,
+  plot = combined_trend_plot,
   width = 16,
   height = 12
 )
 
-
 retrospective_mean_scores <- retrospective_ensemble_scores |>
   dplyr::summarise(
-    mean_retrospective_score = mean(metric_value),
+    mean_retrospective_score = mean(metric_value, na.rm = TRUE),
     .by = c(metric_name, disease, scale)
   )
 
@@ -2095,17 +2447,846 @@ operational_mean_scores <- retro_scores_comparison |>
     .by = c(metric_name, disease)
   )
 
-scores_percent_change <-
-  dplyr::left_join(
-    operational_mean_scores,
-    retrospective_mean_scores,
+scores_percent_change <- dplyr::left_join(
+  operational_mean_scores,
+  retrospective_mean_scores,
 
-    by = c(
-      "metric_name",
-      "disease"
-    )
-  ) |>
+  by = c(
+    "metric_name",
+    "disease"
+  )
+) |>
   dplyr::mutate(
     percent_change = 100 * (mean_operational_score - mean_retrospective_score) / mean_retrospective_score
   )
 scores_percent_change
+
+# Calibration plots
+
+interval_90 <- function(...) {
+  scoringutils::interval_coverage(..., interval_range = 90)
+}
+
+coverage_statistics <- wis_ready |>
+  dplyr::mutate(disease = disease_facet_labels(disease)) |>
+  dplyr::left_join(trend_dates, by = "disease") |>
+  dplyr::filter(
+    prediction_start_date >= start,
+    prediction_start_date <= end
+  ) |>
+  dplyr::filter(
+    model == "ensemble_stack",
+    disease %in% c("COVID-19", "Influenza")
+  ) |>
+  scoringutils::as_forecast_quantile(forecasting_unit) |>
+  scoringutils::score(metrics = list(int_90 = interval_90)) |>
+  scoringutils::summarise_scores(
+    by = c("prediction_start_date", "model", "disease", "metric", "location", "location_level")
+  )
+
+coverage_plot <- coverage_statistics |>
+  dplyr::bind_rows(
+    holiday_break_tibble |>
+      tidyr::expand_grid(
+        dplyr::distinct(coverage_statistics, location, location_level)
+      ) |>
+      dplyr::rename("int_90" = score_value)
+  ) |>
+  dplyr::arrange(prediction_start_date) |>
+  dplyr::summarise(
+    upr = max(int_90),
+    mean = mean(int_90),
+    lwr = min(int_90),
+    .by = c("prediction_start_date", "disease", "location_level")
+  ) |>
+  dplyr::mutate(
+    location_level = dplyr::case_when(
+      location_level == "nation" ~ "Nation",
+      location_level == "region" ~ "Region",
+      location_level == "icb" ~ "ICB"
+    ),
+
+    location_level = ordered(location_level, c("Nation", "Region", "ICB"))
+  ) |>
+  ggplot2::ggplot() +
+  ggplot2::geom_ribbon(
+    ggplot2::aes(x = prediction_start_date, ymin = lwr, ymax = upr),
+    alpha = 0.5,
+    fill = themes$select_ukhsa_colour("orange")
+  ) +
+  ggplot2::geom_line(
+    ggplot2::aes(x = prediction_start_date, y = mean, colour = "Observed")
+  ) +
+  ggplot2::geom_hline(ggplot2::aes(yintercept = 0.9, colour = "Nominal")) +
+  ggplot2::labs(x = "Prediction start date", y = "Coverage", colour = "Coverage") +
+  ggplot2::scale_colour_manual(
+    values = c(
+      "Nominal" = themes$select_ukhsa_colour("teal"),
+      "Observed" = themes$select_ukhsa_colour("orange")
+    )
+  ) +
+  ggplot2::facet_grid(ggplot2::vars(location_level), ggplot2::vars(disease)) +
+  ggplot2::ggtitle(
+    "Observed vs Empircal 90% Coverage Statistics",
+    subtitle = "Orange lines are mean coverage statistics per prediction start date, the bands show minimum and maximum values across a spatial granularity level"
+  )
+
+ggplot2::ggsave(
+  here::here(plot_output_dir, "SUPPLEMENT_coverage_statistics.png"),
+  plot = coverage_plot,
+  width = 16,
+  height = 12
+)
+
+## scoring all operational models
+
+pre_score_operational <- summary |>
+  dplyr::filter(
+    disease %in% c("covid-19", "influenza"),
+    metric == "admissions",
+    model_in_ensemble %in% c("included", "ensemble"),
+    date >= prediction_start_date,
+    date <= prediction_start_date + lubridate::days(13),
+    date <= "2025-04-01"
+  ) |>
+  dplyr::mutate(
+    model = dplyr::if_else(
+      grepl("unweighted_mellor_ensemble_", model),
+      "Operational ensemble",
+      model
+    ),
+
+    model = dplyr::if_else(model == "", "null", model)
+  ) |>
+  dplyr::collect() |>
+  tidyr::pivot_longer(
+    cols = dplyr::starts_with("pi_"),
+    values_to = "predicted",
+    names_to = "quantile_level"
+  ) |>
+  dplyr::mutate(
+    quantile_level = stringr::str_remove(quantile_level, "pi_"),
+    quantile_level = as.numeric(quantile_level) / 100,
+    disease = disease_facet_labels(disease)
+  ) |>
+  dplyr::select(-target_value) |>
+  dplyr::left_join(
+    observed_by_geography |> dplyr::mutate(disease = disease_facet_labels(disease)),
+    by = c("date", "location", "location_level", "metric", "disease", "age_group")
+  ) |>
+  dplyr::select(
+    !dplyr::starts_with("p_"),
+    "observed" = observed_target
+  ) |>
+  dplyr::mutate(target_name = "admissions") |>
+  dplyr::filter(
+    model_date == min(model_date, na.rm = TRUE),
+    .by = c("model", "prediction_start_date", "disease")
+  ) |>
+  dplyr::distinct()
+
+scored_operational <- pre_score_operational |>
+  dplyr::select(!dplyr::starts_with("p_")) |>
+  dplyr::mutate(target_name = "admissions") |>
+  dplyr::distinct() |>
+  scoringutils::as_forecast_quantile(
+    forecast_unit = forecasting_unit
+  ) |>
+  scoringutils::transform_forecasts(fun = divide, label = "per_capita", y = pre_score_operational$population) |>
+  scoringutils::score(metrics = c(wis = scoringutils::wis)) |>
+  dplyr::mutate(score_name = "pcWIS") |>
+  dplyr::rename("score" = wis)
+
+
+rps_pre_score_operational <- summary |>
+  dplyr::select(
+    model,
+    date,
+    prediction_start_date,
+    location,
+    location_level,
+    age_group,
+    age_group_granularity,
+    target_value,
+    target_name,
+    p_increase,
+    p_stable,
+    p_decrease,
+    disease,
+    metric,
+    model_date,
+    model_in_ensemble,
+    population
+  ) |>
+  dplyr::filter(
+    disease %in% c("covid-19", "influenza"),
+    metric == "admissions",
+    model_in_ensemble %in% c("included", "ensemble"),
+    date >= prediction_start_date,
+    date <= prediction_start_date + lubridate::days(13),
+    date <= "2025-04-01"
+  ) |>
+  dplyr::mutate(
+    model = dplyr::if_else(
+      grepl("unweighted_mellor_ensemble_", model),
+      "Operational ensemble",
+      model
+    ),
+    is_reported_model = (model == "Operational ensemble")
+  ) |>
+  dplyr::distinct() |>
+  dplyr::collect()
+
+rps_operational_scoring_ready <- rps_pre_score_operational |>
+  dplyr::group_by(
+    model,
+    prediction_start_date,
+    location,
+    location_level,
+    age_group,
+    age_group_granularity,
+    disease,
+    metric,
+    model_date,
+    population
+  ) |>
+  dplyr::slice_max(date) |>
+  dplyr::left_join(
+    lagged_values,
+    by = dplyr::join_by(date, location, location_level, age_group, disease, metric)
+  ) |>
+  #dplyr::mutate(observed_trend = classify_trend(observed, observed_lag)) |>
+  dplyr::slice_max(date) |>
+  # is a row-wise operation
+  most_likely_trend() |>
+  dplyr::ungroup() |>
+  tidyr::pivot_longer(
+    dplyr::starts_with("p_"),
+    names_to = "raw_trend_category",
+    values_to = "raw_trend_probability"
+  ) |>
+  dplyr::mutate(raw_trend_category = stringr::str_remove(raw_trend_category, "p_")) |>
+  dplyr::rename(
+    "observed" = observed_trend,
+    "predicted" = raw_trend_probability,
+    "predicted_label" = raw_trend_category
+  ) |>
+  dplyr::distinct() |>
+  dplyr::mutate(
+    observed = ordered(observed, levels = c("decrease", "stable", "increase")),
+    predicted_label = ordered(predicted_label, levels = c("decrease", "stable", "increase"))
+  ) |>
+  dplyr::mutate(predicted = predicted / sum(predicted), .by = dplyr::all_of(forecasting_unit))
+
+rps_operational_scored <- rps_operational_scoring_ready |>
+  scoringutils::as_forecast_ordinal(forecast_unit = c(forecasting_unit, "is_reported_model")) |>
+  scoringutils::score() |>
+  dplyr::mutate(score_name = "RPS") |>
+  dplyr::rename("score" = rps)
+
+
+summary_unit <- c(
+  "model",
+  "prediction_start_date",
+  "location",
+  "location_level",
+  "age_group",
+  "age_group_granularity",
+  "disease",
+  "metric",
+  "score_name"
+)
+
+op_summary <- dplyr::bind_rows(
+  scored_operational |> dplyr::filter(scale == "per_capita"),
+  rps_operational_scored |> dplyr::mutate(scale = "per_capita")
+) |>
+  dplyr::mutate(disease = disease_facet_labels(disease)) |>
+  tidyr::drop_na(model) |>
+  dplyr::summarise(score = mean(score, na.rm = TRUE), .by = dplyr::all_of(summary_unit))
+
+gg_colour_hue <- function(variable_names) {
+  n <- length(variable_names)
+
+  hues <- seq(15, 375, length = n + 1)
+  colours <- hcl(h = hues, l = 65, c = 100)[1:n]
+
+  names(colours) <- variable_names
+
+  colours
+}
+
+model_names <- model_code_to_name |>
+  dplyr::filter(name != "gam_tp") |>
+  dplyr::pull(full_name)
+
+pal <- RColorBrewer::brewer.pal(length(model_names) + 1, "Dark2")
+names(pal) <- c(model_names, "Operational ensemble")
+pal[names(pal) == "Operational ensemble"] = "black"
+
+
+operational_scores_plot_nation <- op_summary |>
+  tibble::tibble() |>
+  dplyr::filter(prediction_start_date %in% operational_dates) |>
+  dplyr::filter(location_level == "nation") |>
+  tidyr::complete(prediction_start_date, tidyr::nesting(disease, score_name), fill = list(score = NA_real_)) |>
+  dplyr::group_by(disease, model, score_name) |>
+  dplyr::arrange(prediction_start_date) |>
+  dplyr::mutate(lead_time = dplyr::lead(prediction_start_date) - prediction_start_date) |>
+  dplyr::filter(dplyr::lead(prediction_start_date) - prediction_start_date > 5) |>
+  dplyr::ungroup() |>
+  dplyr::bind_rows(
+    holiday_break_tibble |>
+      dplyr::select(prediction_start_date, disease) |>
+      dplyr::distinct() |>
+      tidyr::expand_grid(score_name = c("pcWIS", "RPS")) |>
+      dplyr::right_join(
+        scored_operational |>
+          dplyr::distinct(model, disease),
+        by = "disease",
+        relationship = "many-to-many"
+      )
+  ) |>
+  tidyr::drop_na(model) |>
+  dplyr::left_join(
+    model_code_to_name |>
+      dplyr::add_row(name = "Operational ensemble", full_name = "Operational ensemble"),
+    by = dplyr::join_by(model == name)
+  ) |>
+  dplyr::mutate(
+    is_ensemble = (model == "Operational ensemble"),
+    score = log(score)
+  ) |>
+  ggplot2::ggplot() +
+  ggplot2::geom_line(
+    ggplot2::aes(x = prediction_start_date, y = (score), colour = full_name, linewidth = as.character(is_ensemble))
+  ) +
+  ggplot2::scale_linewidth_manual(
+    values = c("TRUE" = 1.5, "FALSE" = 0.8),
+    guide = "none"
+  ) +
+  ggplot2::scale_colour_manual(values = pal) +
+  ggplot2::facet_grid(ggplot2::vars(score_name), ggplot2::vars(disease), scale = "free_y") +
+  ggplot2::ggtitle(
+    "log(pcWIS) and log(RPS) for operational ensemble and models used in real-time"
+  ) +
+  ggplot2::labs(
+    x = "Prediction start date",
+    y = "log(Score)",
+    colour = "Model"
+  ) +
+  ggplot2::theme(legend.title = ggplot2::element_text(size = 14), legend.text = ggplot2::element_text(size = 11))
+
+ggplot2::ggsave(
+  filename = here::here(plot_output_dir, "national_score_comparison.png"),
+  plot = operational_scores_plot_nation,
+  width = 16,
+  height = 12
+)
+
+ggplot2::ggsave(
+  filename = here::here(plot_output_dir_tiff, "fig_2.tiff"),
+  plot = operational_scores_plot_nation,
+  width = 19,
+  height = 14.25,
+  dpi = 300,
+  units = "cm"
+)
+
+operational_scores_plot_facet <- op_summary |>
+  dplyr::filter(prediction_start_date %in% operational_dates) |>
+  tibble::tibble() |>
+  dplyr::summarise(
+    score = mean(score),
+    .by = c(disease, prediction_start_date, score_name, location_level, model)
+  ) |>
+  tidyr::complete(prediction_start_date, tidyr::nesting(disease, score_name), fill = list(score = NA_real_)) |>
+  dplyr::group_by(disease, model, score_name, location_level) |>
+  dplyr::arrange(prediction_start_date) |>
+  dplyr::mutate(lead_time = dplyr::lead(prediction_start_date) - prediction_start_date) |>
+  dplyr::filter(dplyr::lead(prediction_start_date) - prediction_start_date > 5) |>
+  dplyr::ungroup() |>
+  dplyr::bind_rows(
+    holiday_break_tibble |>
+      dplyr::select(prediction_start_date, disease) |>
+      dplyr::distinct() |>
+      tidyr::expand_grid(score_name = c("pcWIS", "RPS"), location_level = c("icb", "region", "nation")) |>
+      dplyr::right_join(
+        scored_operational |>
+          dplyr::distinct(model, disease),
+        by = "disease",
+        relationship = "many-to-many"
+      )
+  ) |>
+  dplyr::mutate(
+    location_level = dplyr::case_when(
+      location_level == "icb" ~ "ICB",
+      location_level == "region" ~ "Region",
+      location_level == "nation" ~ "Nation"
+    ),
+    location_level = ordered(location_level, levels = c("ICB", "Region", "Nation")),
+    facet_name = glue::glue("{disease} | {score_name}")
+  ) |>
+  dplyr::left_join(
+    model_code_to_name |> tibble::add_row(name = "Operational ensemble", full_name = "Operational ensemble"),
+    by = c("model" = "name")
+  ) |>
+  dplyr::select(-model) |>
+  dplyr::rename("model" = full_name) |>
+  tidyr::drop_na(model) |>
+  dplyr::mutate(
+    is_ensemble = (model == "Operational ensemble"),
+    score = log(score)
+  ) |>
+  ggplot2::ggplot() +
+  ggplot2::geom_line(
+    ggplot2::aes(x = prediction_start_date, y = (score), colour = model, linewidth = as.character(is_ensemble))
+  ) +
+  ggplot2::scale_linewidth_manual(
+    values = c("TRUE" = 1.5, "FALSE" = 0.8),
+    guide = "none"
+  ) +
+  ggplot2::scale_colour_manual(values = pal) +
+  ggplot2::facet_wrap(ggplot2::vars(facet_name, location_level), scale = "free_y", ncol = 3) +
+  ggplot2::ggtitle(
+    "log scores for operational ensemble and models used in real-time",
+    "Scores per prediction start date are averaged across all locations at a given spatial granularity"
+  ) +
+  ggplot2::labs(
+    x = "Prediction start date",
+    y = "log(Score)",
+    colour = "Model"
+  )
+
+operational_scores_plot_facet
+
+ggplot2::ggsave(
+  filename = here::here(plot_output_dir, "facet_score_comparison.png"),
+  plot = operational_scores_plot_facet,
+  width = 16,
+  height = 12
+)
+
+### summary of scores
+
+matched_ensemble_scores <- rps_scored |>
+  dplyr::left_join(
+    ensembles_scored,
+
+    by = c(
+      "model",
+      "prediction_start_date",
+      "location",
+      "location_level",
+      "age_group",
+      "age_group_granularity",
+      "date",
+      "disease",
+      "metric"
+    ),
+    suffix = c("_rps", "_wis")
+  ) |>
+  dplyr::mutate(population = population_rps) |>
+  dplyr::filter(
+    disease %in% c("covid-19", "influenza"),
+    model == "ensemble_matched"
+  ) |>
+  tidyr::pivot_longer(
+    cols = c(wis, rps),
+    names_to = "metric_name",
+    values_to = "metric_value"
+  ) |>
+  # model_type = ensemble_matched
+  dplyr::mutate(model_type = dplyr::if_else(model == "ensemble_matched", "Matched Ensemble", "Sub-Ensemble")) |>
+  dplyr::rename("score" = metric_value, "score_name" = metric_name) |>
+  dplyr::select(dplyr::all_of(colnames(op_summary))) |>
+  dplyr::filter(model == "ensemble_matched") |>
+  dplyr::mutate(
+    model_type = "Matched ensemble",
+    disease = disease_facet_labels(disease),
+    score_name = dplyr::case_when(
+      score_name == "wis" ~ "pcWIS",
+      score_name == "rps" ~ "RPS",
+      .default = NA_character_
+    )
+  )
+
+min_date_disease <- matched_ensemble_scores |>
+  dplyr::summarise(
+    min_psd = min(prediction_start_date),
+    .by = disease
+  )
+
+matched_dates <- unique(matched_ensemble_scores$prediction_start_date)
+published_min_date <- retro_scores_comparison |>
+  dplyr::filter(model == "ensemble_stack") |>
+  dplyr::summarise(min_psd = min(prediction_start_date), .by = "disease")
+
+
+upstream_format <- op_summary |>
+  dplyr::rowwise() |>
+  dplyr::filter(
+    # check this line ok
+    if (model == "Operational ensemble") prediction_start_date %in% matched_dates else TRUE
+  ) |>
+  dplyr::ungroup() |>
+  dplyr::left_join(min_date_disease, by = "disease") |>
+  dplyr::filter(prediction_start_date >= min_psd) |>
+  tibble::tibble() |>
+  dplyr::mutate(
+    model_type = dplyr::if_else(model == "Operational ensemble", "Operational ensemble", "Individual models")
+  ) |>
+  dplyr::bind_rows(matched_ensemble_scores) |>
+  tibble::tibble() |>
+  dplyr::mutate(
+    # add in subensemble type later
+    model_type = dplyr::case_when(
+      model == "Operational ensemble" ~ "Operational Ensemble",
+      model == "ensemble_matched" ~ "Matched Ensemble",
+      .default = "Individual Models"
+    )
+  ) |>
+  # looks like overkill
+  #dplyr::bind_rows(matched_ensemble_scores) |>
+  dplyr::left_join(published_min_date, by = "disease") |>
+  #dplyr::filter(prediction_start_date >= min_psd) |>
+  dplyr::summarise(
+    score = mean(score, na.rm = TRUE),
+    .by = c("model", "prediction_start_date", "model_type", "disease", "score_name", "location_level")
+  ) |>
+  # can only have one prediction per week, there are some dupes - use the first one
+  dplyr::mutate(
+    # monday of prediction week
+    prediction_week = round_to_wednesday(prediction_start_date) - lubridate::days(2)
+  ) |>
+  dplyr::filter(prediction_start_date == min(prediction_start_date), .by = c(prediction_week, disease)) |>
+  dplyr::select(-prediction_week)
+
+operational_score_summary <- upstream_format |>
+  dplyr::summarise(
+    mean_score = mean(score, na.rm = TRUE),
+    .by = c("model_type", "disease", "score_name", "location_level")
+  )
+
+operational_score_summary |>
+  dplyr::summarise(
+    mean_score = mean(mean_score, na.rm = TRUE),
+    .by = c("model_type", "disease", "score_name", "location_level")
+  ) |>
+  dplyr::mutate(
+    mean_score = signif(mean_score, 4),
+    location_level = dplyr::case_when(
+      location_level == "icb" ~ "ICB",
+      location_level == "region" ~ "Region",
+      location_level == "nation" ~ "Nation"
+    ),
+    location_level = ordered(location_level, levels = c("ICB", "Region", "Nation"))
+  ) |>
+  dplyr::arrange(
+    disease,
+    dplyr::desc(score_name),
+    dplyr::desc(location_level),
+    model_type
+  ) |>
+  gt::gt() |>
+  gt::fmt_scientific(exp_style = "x10n") |>
+  gt::gtsave(here::here(plot_output_dir, "ensemble_score_summary.docx"))
+
+# fig 6 - retrospective scores
+
+retro_plot_data <- upstream_format |>
+  dplyr::filter(
+    location_level == "nation",
+    # the indiv models here' aren't the retrospective ones!
+    model_type != "Individual Models"
+  ) |>
+  dplyr::select(-c(location_level)) |>
+  dplyr::bind_rows(
+    retrospective_ensemble_scores |>
+      dplyr::filter(model != "ensemble_matched", location_level == "nation") |>
+      dplyr::summarise(
+        score = mean(metric_value),
+        .by = c(model, disease, metric_name, prediction_start_date)
+      ) |>
+      dplyr::mutate(
+        model_type = "Sub-Ensemble",
+        disease = disease_facet_labels(disease),
+        score_name = dplyr::if_else(
+          metric_name == "rps",
+          "RPS",
+          "pcWIS"
+        )
+      )
+  ) |>
+  dplyr::bind_rows(
+    individual_retrospective_scores |>
+      dplyr::filter(location_level == "nation") |>
+      dplyr::mutate(model_date = as.Date(model_date)) |>
+      dplyr::summarise(
+        score = mean(metric_value),
+        .by = c(model, disease, metric_name, prediction_start_date)
+      ) |>
+      dplyr::mutate(
+        model_type = "Individual",
+        disease = disease_facet_labels(disease),
+        score_name = dplyr::if_else(
+          metric_name == "rps",
+          "RPS",
+          "pcWIS"
+        )
+      )
+  ) |>
+  dplyr::mutate(
+    score = log(score),
+    scale = "per_capita",
+    model_type = ordered(
+      model_type,
+      levels = c("Individual", "Sub-Ensemble", "Matched Ensemble", "Operational Ensemble")
+    )
+  ) |>
+  dplyr::mutate(
+    # monday of prediction week
+    prediction_week = round_to_wednesday(prediction_start_date) - lubridate::days(2)
+  ) |>
+  dplyr::filter(
+    prediction_start_date == min(prediction_start_date),
+    .by = c(prediction_week, disease, model_type, model)
+  ) |>
+  dplyr::select(-prediction_week)
+
+retro_scores_comparison_plot <- retro_plot_data |>
+  dplyr::group_split(score_name) |>
+  purrr::map(
+    \(input_df) {
+      min_date <- input_df |>
+        dplyr::filter(model_type == "Operational Ensemble") |>
+        dplyr::summarise(first_date = min(prediction_start_date, na.rm = TRUE), .by = "disease")
+
+      chosen_metric <- unique(input_df$score_name)
+      metric_lab <- glue::glue("log({chosen_metric})")
+
+      plot_data <- input_df |>
+        dplyr::bind_rows(
+          tidyr::expand_grid(
+            prediction_start_date = as.Date("2024-12-25"),
+            model_type = c("Matched Ensemble"),
+            model = "ensemble_matched",
+            disease = c("COVID-19", "Influenza")
+          )
+        ) |>
+        dplyr::bind_rows(
+          tidyr::expand_grid(
+            prediction_start_date = as.Date("2024-12-25"),
+            model_type = c("Operational Ensemble"),
+            model = "Operational ensemble",
+            disease = c("COVID-19", "Influenza")
+          )
+        ) |>
+        dplyr::left_join(min_date, by = "disease") |>
+        dplyr::filter(prediction_start_date >= first_date) |>
+        dplyr::arrange(prediction_start_date, model)
+
+      plot_data |>
+        ggplot2::ggplot(
+          ggplot2::aes(
+            x = prediction_start_date,
+            y = score,
+            colour = model_type,
+            group = model,
+            linewidth = model_type
+          )
+        ) +
+        ggplot2::geom_line() +
+        ggplot2::geom_line(
+          data = dplyr::filter(plot_data, model_type == "Operational Ensemble"),
+          mapping = ggplot2::aes(x = prediction_start_date, y = score, colour = model_type, group = model)
+        ) +
+        ggplot2::geom_line(
+          data = dplyr::filter(plot_data, model_type == "Matched Ensemble"),
+          mapping = ggplot2::aes(x = prediction_start_date, y = score, colour = model_type, group = model)
+        ) +
+        ggplot2::scale_colour_manual(
+          values = c(
+            "Sub-Ensemble" = "#134074",
+            "Individual" = "#bfab25",
+            "Operational Ensemble" = "#df2935",
+            "Matched Ensemble" = "cyan"
+          )
+        ) +
+        ggplot2::ylab(metric_lab) +
+        ggplot2::xlab("Prediction start date") +
+        ggplot2::ggtitle("") +
+        ggplot2::scale_linewidth_manual(
+          values = c(
+            "Sub-Ensemble" = 0.25,
+            "Individual" = 0.25,
+            "Operational Ensemble" = 1.2,
+            "Matched Ensemble" = 1.2
+          ),
+          guide = "none"
+        ) +
+        ggplot2::labs(colour = "Model type") +
+        ggplot2::facet_wrap(ggplot2::vars(disease), scales = "free", ncol = 2) +
+        ggplot2::theme(plot.title = ggplot2::element_blank())
+    }
+  ) |>
+  rev() |> # puts pcWIs on top
+  patchwork::wrap_plots(ncol = 1) +
+  patchwork::plot_annotation(
+    "Comparison of retrospective models and ensembles to operational forecasts",
+    "All scores are for national georaphy"
+  ) +
+  patchwork::plot_layout(
+    guides = "collect",
+    axis = "collect_x"
+  ) &
+  ggplot2::theme(legend.title = ggplot2::element_text(size = 14), legend.text = ggplot2::element_text(size = 10))
+
+
+ggplot2::ggsave(
+  here::here(plot_output_dir, "retrospective_to_ensemble_comparison.png"),
+  retro_scores_comparison_plot,
+  width = 16,
+  height = 12
+)
+
+ggplot2::ggsave(
+  filename = here::here(plot_output_dir_tiff, "fig_6.tiff"),
+  plot = retro_scores_comparison_plot,
+  width = 19,
+  height = 14.25,
+  dpi = 300,
+  units = "cm"
+)
+
+
+# percent errors
+
+operational_score_summary |>
+  dplyr::mutate(
+    mean_score = signif(mean_score, 4),
+    location_level = dplyr::case_when(
+      location_level == "icb" ~ "ICB",
+      location_level == "region" ~ "Region",
+      location_level == "nation" ~ "Nation"
+    ),
+    location_level = ordered(location_level, levels = c("ICB", "Region", "Nation")),
+    age_group_granularity = "None"
+  ) |>
+  dplyr::arrange(
+    dplyr::desc(score_name),
+    disease,
+    dplyr::desc(location_level),
+    model_type
+  ) |>
+  dplyr::filter(location_level == "Nation") |>
+  tidyr::pivot_wider(
+    names_from = "model_type",
+    values_from = "mean_score"
+  ) |>
+  janitor::clean_names() |>
+  dplyr::mutate(pc_err = 100 * (operational_ensemble - individual_models) / individual_models)
+
+mean_population <- summary |>
+  dplyr::filter(disease == "influenza") |>
+  dplyr::summarise(
+    population = mean(population),
+    .by = "location"
+  ) |>
+  dplyr::collect()
+
+population_score_data <- op_summary |>
+  dplyr::filter(model == "Operational ensemble") |>
+  tidyr::pivot_wider(
+    names_from = "score_name",
+    values_from = "score"
+  ) |>
+  janitor::clean_names() |>
+  dplyr::summarise(
+    pc_wis = mean(pc_wis),
+    rps = mean(rps),
+    .by = c("disease", "location", "location_level")
+  ) |>
+  dplyr::left_join(mean_population, by = "location") |>
+  dplyr::mutate(
+    location_level = dplyr::case_when(
+      location_level == "icb" ~ "ICB",
+      location_level == "region" ~ "Region",
+      location_level == "nation" ~ "Nation"
+    ),
+    location_level = ordered(location_level, levels = c("ICB", "Region", "Nation"))
+  )
+
+mean_location_level_scores <- population_score_data |>
+  dplyr::summarise(
+    pc_wis = mean(pc_wis),
+    rps = mean(rps),
+    .by = c("disease", "location_level")
+  )
+
+scientific_labels <- function(x) {
+  parse(text = gsub("e\\+", " %*% 10^", scales::scientific_format()(x)))
+}
+
+population_score_plot <- population_score_data |>
+  dplyr::mutate(pc_wis = log(pc_wis), rps = log(rps)) |>
+  ggplot2::ggplot() +
+  ggplot2::geom_point(
+    ggplot2::aes(x = pc_wis, y = rps, colour = location_level, size = population),
+    alpha = 0.6
+  ) +
+  ggplot2::facet_wrap(ggplot2::vars(disease), scales = "free") +
+  ggplot2::labs(
+    x = "log(pcWIS)",
+    y = "log(RPS)",
+    colour = "Location level",
+    size = "Population"
+  ) +
+  ggplot2::scale_size_continuous(labels = scientific_labels)
+
+population_score_plot
+
+population_range_plot <- population_score_data |>
+  dplyr::distinct(location_level, location, population) |>
+  ggplot2::ggplot() +
+  ggplot2::geom_boxplot(
+    ggplot2::aes(x = location_level, y = population)
+  ) +
+  ggplot2::labs(
+    x = "Location level",
+    y = "Population"
+  ) +
+  ggplot2::scale_y_log10(labels = scientific_labels) +
+  ggplot2::coord_flip()
+
+population_combined_plot <- patchwork::wrap_plots(
+  population_score_plot,
+  population_range_plot
+) +
+  patchwork::plot_layout(ncol = 1, heights = c(3, 1)) +
+  patchwork::plot_annotation(
+    title = "Operational ensemble predictive performance with population",
+    subtitle = "pcWIS, RPS and population values averaged over entire season. Boxplot shows range of population values for each location level."
+  )
+
+population_combined_plot
+
+ggplot2::ggsave(
+  filename = here::here(plot_output_dir, "score_population.png"),
+  plot = population_combined_plot,
+  width = 16,
+  height = 12
+)
+
+# how often was the reported ordinal forecast correct?
+
+ordinal_ready |>
+  dplyr::filter(model == "ensemble_stack", metric == "admissions") |>
+  dplyr::group_by(prediction_start_date, location, location_level, disease) |>
+  dplyr::slice_max(predicted) |>
+  dplyr::mutate(correct_prediction = (observed == predicted_label)) |>
+  dplyr::ungroup() |>
+  dplyr::summarise(
+    pct_correct = mean(correct_prediction),
+    .by = c("disease", "location_level")
+  )

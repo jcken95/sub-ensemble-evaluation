@@ -2,7 +2,7 @@ source("evaluation/post-season-evaluation/analysis/00-depends.R")
 deps_$need(
   "dplyr",
   "ggplot2",
-  "lubrdate",
+  "lubridate",
   "stringr"
 )
 
@@ -71,8 +71,6 @@ summary |>
   dplyr::filter(
     location_level == "nation",
     age_group == "all",
-    # TODO: better ensemble filter; early RSV models were single-model (tp|gp)
-    # noro is also a single-model approach (nowcast)
     grepl("ensemble|tp|gp|nowcast", model),
     (date >= prediction_start_date) | (date >= prediction_start_date - lubridate::days(7) & disease == "norovirus"),
     model_date > "2024-09-01"

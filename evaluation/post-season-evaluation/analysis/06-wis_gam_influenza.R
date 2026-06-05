@@ -31,11 +31,11 @@ deps_$need(
 
 ggplot2::theme_set(theme_pancasts())
 
-scoring_s3_root <- "PATH REDACTED"
+scoring_s3_root <- "REDACTED"
 
 individual_models <- dplyr::tbl(
   redshift$connect(use_existing = FALSE),
-  I("pancasts_glue.samples_eval2425")
+  I("REDACTED")
 ) |>
   dplyr::distinct(model) |>
   dplyr::filter(model != "") |>
