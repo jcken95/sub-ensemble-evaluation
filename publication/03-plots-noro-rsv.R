@@ -943,7 +943,7 @@ rsv_score_age_plot <- score_summary_age |>
   ggplot2::ggplot() +
   ggplot2::geom_line(ggplot2::aes(x = prediction_start_date, y = pcwis)) +
   ggplot2::ggtitle(
-    "pcWIS for regional RSV forecasts",
+    "pcWIS for age breakdown RSV forecasts",
     subtitle = "Mean pcWIS per prediction start date (log scale)"
   ) +
   ggplot2::labs(x = "Prediction Start Date", y = "log(pcWIS)") +
