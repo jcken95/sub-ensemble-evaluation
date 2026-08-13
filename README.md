@@ -2,7 +2,7 @@
 
 Code to facilitate evaluation of UKHSA forecasts over winter 2024-25 and to accompany the paper _Evaluation of short-term multi-target respiratory forecasts over winter 2024-25 in England using sub-ensemble contribution analyses_.
 
-The paper ia open access and was published in PLoS Computational Biology, August 2026 and is available [here](https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1014644)
+The paper is open access and was published in PLoS Computational Biology, August 2026 and is available [here](https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1014644)
 
 Authors: [@jcken95](https://www.github.com/jcken95), [@DrAuxetic](https://www.github.com/DrAuxetic), [@owenjonesuob](https://www.github.com/owenjonesuob), [Steven Riley](https://www.gov.uk/government/people/steven-riley), [Thomas Ward](https://www.researchgate.net/scientific-contributions/Thomas-Ward-2205092081), [@maria-tang](https://www.github.com/maria-tang),  [@jonathonmellor](https://www.github.com/jonathonmellor)
 
