@@ -953,7 +953,7 @@ models_used_plot <- models_used |>
   ggplot2::labs(
     y = "Model name",
     x = "Forecast production date",
-    fill = "Model in operation ensemble?",
+    fill = "Model in operational ensemble?",
     alpha = "Is first use?"
   ) +
   ggplot2::facet_wrap(
@@ -2152,7 +2152,6 @@ reported_mean_scores
 retro_mean_scores <- retro_scores_comparison |>
   dplyr::left_join(first_psd_disease, by = "disease") |>
   dplyr::filter(
-    model_type == "Operational Ensemble",
     prediction_start_date >= min_psd
   ) |>
   dplyr::mutate(scale = dplyr::coalesce(scale, "natural")) |>
@@ -2164,18 +2163,22 @@ retro_mean_scores <- retro_scores_comparison |>
   dplyr::filter(prediction_start_date %in% operational_dates) |>
   dplyr::summarise(
     mean_score = mean(metric_value),
-    .by = c(model, metric_name, disease, scale)
+    .by = c(model, metric_name, disease, scale, model, model_type, location_level)
   )
 
 # summary stats of retro_mean_scores
-retro_mean_scores |>
+retro_summary_table <- retro_mean_scores |>
+  dplyr::filter(
+    location_level == "nation"
+  ) |>
   dplyr::summarise(
     lo_mean = min(mean_score),
     overall_mean_score = mean(mean_score),
     hi_mean = max(mean_score),
-
-    .by = c(metric_name, disease, scale)
-  )
+    .by = c(metric_name, disease, scale, model_type)
+  ) |>
+  dplyr::arrange(metric_name, disease, scale, model_type) |>
+  dplyr::filter(model_type %in% c("Operational Ensemble", "Sub-Ensemble"))
 
 # quanitles (eCDF)
 
@@ -2467,6 +2470,10 @@ interval_90 <- function(...) {
   scoringutils::interval_coverage(..., interval_range = 90)
 }
 
+interval_50 <- function(...) {
+  scoringutils::interval_coverage(..., interval_range = 50)
+}
+
 coverage_statistics <- wis_ready |>
   dplyr::mutate(disease = disease_facet_labels(disease)) |>
   dplyr::left_join(trend_dates, by = "disease") |>
@@ -2479,12 +2486,12 @@ coverage_statistics <- wis_ready |>
     disease %in% c("COVID-19", "Influenza")
   ) |>
   scoringutils::as_forecast_quantile(forecasting_unit) |>
-  scoringutils::score(metrics = list(int_90 = interval_90)) |>
+  scoringutils::score(metrics = list(int_90 = interval_90, int_50 = interval_50)) |>
   scoringutils::summarise_scores(
     by = c("prediction_start_date", "model", "disease", "metric", "location", "location_level")
   )
 
-coverage_plot <- coverage_statistics |>
+coverage_plot_90 <- coverage_statistics |>
   dplyr::bind_rows(
     holiday_break_tibble |>
       tidyr::expand_grid(
@@ -2526,9 +2533,68 @@ coverage_plot <- coverage_statistics |>
     )
   ) +
   ggplot2::facet_grid(ggplot2::vars(location_level), ggplot2::vars(disease)) +
-  ggplot2::ggtitle(
-    "Observed vs Empircal 90% Coverage Statistics",
-    subtitle = "Orange lines are mean coverage statistics per prediction start date, the bands show minimum and maximum values across a spatial granularity level"
+  ggplot2::ggtitle("90% Coverage Statistics")
+
+coverage_plot_50 <- coverage_statistics |>
+  dplyr::bind_rows(
+    holiday_break_tibble |>
+      tidyr::expand_grid(
+        dplyr::distinct(coverage_statistics, location, location_level)
+      ) |>
+      dplyr::rename("int_50" = score_value)
+  ) |>
+  dplyr::arrange(prediction_start_date) |>
+  dplyr::summarise(
+    upr = max(int_50),
+    mean = mean(int_50),
+    lwr = min(int_50),
+    .by = c("prediction_start_date", "disease", "location_level")
+  ) |>
+  dplyr::mutate(
+    location_level = dplyr::case_when(
+      location_level == "nation" ~ "Nation",
+      location_level == "region" ~ "Region",
+      location_level == "icb" ~ "ICB"
+    ),
+
+    location_level = ordered(location_level, c("Nation", "Region", "ICB"))
+  ) |>
+  ggplot2::ggplot() +
+  ggplot2::geom_ribbon(
+    ggplot2::aes(x = prediction_start_date, ymin = lwr, ymax = upr),
+    alpha = 0.5,
+    fill = themes$select_ukhsa_colour("orange")
+  ) +
+  ggplot2::geom_line(
+    ggplot2::aes(x = prediction_start_date, y = mean, colour = "Observed")
+  ) +
+  ggplot2::geom_hline(ggplot2::aes(yintercept = 0.5, colour = "Nominal")) +
+  ggplot2::labs(x = "Prediction start date", y = "Coverage", colour = "Coverage") +
+  ggplot2::scale_colour_manual(
+    values = c(
+      "Nominal" = themes$select_ukhsa_colour("teal"),
+      "Observed" = themes$select_ukhsa_colour("orange")
+    )
+  ) +
+  ggplot2::facet_grid(ggplot2::vars(location_level), ggplot2::vars(disease)) +
+  ggplot2::ggtitle("50% Coverage Statistics")
+
+
+coverage_plot <- patchwork::wrap_plots(
+  coverage_plot_90,
+  coverage_plot_50
+) +
+  patchwork::plot_annotation(
+    title = "Observed vs Nominal Coverage Statistics",
+    subtitle = "Orange lines are mean coverage statistics per prediction start date. Blue lines are nominal coverages.\n\nThe bands show minimum and maximum values across a spatial granularity level."
+  ) +
+  patchwork::plot_layout(guides = "collect") &
+  ggplot2::theme(
+    plot.title = ggplot2::element_text(size = 20),
+    plot.subtitle = ggplot2::element_text(size = 16),
+    legend.text = ggplot2::element_text(size = 16),
+    legend.title = ggplot2::element_text(size = 18),
+    strip.text = ggplot2::element_text(size = 16)
   )
 
 ggplot2::ggsave(
@@ -2766,7 +2832,7 @@ operational_scores_plot_nation <- op_summary |>
     guide = "none"
   ) +
   ggplot2::scale_colour_manual(values = pal) +
-  ggplot2::facet_grid(ggplot2::vars(score_name), ggplot2::vars(disease), scale = "free_y") +
+  ggplot2::facet_grid(ggplot2::vars(score_name), ggplot2::vars(disease), scales = "free_y") +
   ggplot2::ggtitle(
     "log(pcWIS) and log(RPS) for operational ensemble and models used in real-time"
   ) +
@@ -2968,10 +3034,21 @@ operational_score_summary <- upstream_format |>
     .by = c("model_type", "disease", "score_name", "location_level")
   )
 
+
+
 operational_score_summary |>
+  dplyr::bind_rows(retrospective_score_summary) |>
+  dplyr::mutate(
+    model = dplyr::case_when(
+      !is.na(model) ~ model,
+      model_type == "Individual Models" ~ "All individual models",
+      .default = model_type
+    ),
+    model_type = dplyr::coalesce(model_type, "Retrospective Model")
+  ) |>
   dplyr::summarise(
     mean_score = mean(mean_score, na.rm = TRUE),
-    .by = c("model_type", "disease", "score_name", "location_level")
+    .by = c("model_type", "disease", "score_name", "location_level", "model")
   ) |>
   dplyr::mutate(
     mean_score = signif(mean_score, 4),
@@ -3244,7 +3321,24 @@ population_score_plot <- population_score_data |>
   ) +
   ggplot2::scale_size_continuous(labels = scientific_labels)
 
-population_score_plot
+population_score_plot_zoomed <- population_score_data |>
+  dplyr::filter(log(pc_wis) < -10) |>
+  dplyr::mutate(pc_wis = log(pc_wis), rps = log(rps)) |>
+  ggplot2::ggplot() +
+  ggplot2::geom_point(
+    ggplot2::aes(x = pc_wis, y = rps, colour = location_level, size = population),
+    alpha = 0.6
+  ) +
+  ggplot2::facet_wrap(ggplot2::vars(disease), scales = "free") +
+  ggplot2::labs(
+    x = "log(pcWIS)",
+    y = "log(RPS)",
+    colour = "Location level",
+    size = "Population"
+  ) +
+  ggplot2::scale_size_continuous(labels = scientific_labels) +
+  ggplot2::ggtitle("", subtitle = "COVID-19 outlier removed")
+
 
 population_range_plot <- population_score_data |>
   dplyr::distinct(location_level, location, population) |>
@@ -3259,34 +3353,39 @@ population_range_plot <- population_score_data |>
   ggplot2::scale_y_log10(labels = scientific_labels) +
   ggplot2::coord_flip()
 
+
 population_combined_plot <- patchwork::wrap_plots(
   population_score_plot,
+  population_score_plot_zoomed,
   population_range_plot
 ) +
-  patchwork::plot_layout(ncol = 1, heights = c(3, 1)) +
+  patchwork::plot_layout(ncol = 1, heights = c(2, 2, 1), guides = "collect") +
   patchwork::plot_annotation(
     title = "Operational ensemble predictive performance with population",
     subtitle = "pcWIS, RPS and population values averaged over entire season. Boxplot shows range of population values for each location level."
-  )
 
-population_combined_plot
 
-ggplot2::ggsave(
-  filename = here::here(plot_output_dir, "score_population.png"),
-  plot = population_combined_plot,
-  width = 16,
-  height = 12
-)
 
-# how often was the reported ordinal forecast correct?
 
-ordinal_ready |>
-  dplyr::filter(model == "ensemble_stack", metric == "admissions") |>
-  dplyr::group_by(prediction_start_date, location, location_level, disease) |>
-  dplyr::slice_max(predicted) |>
-  dplyr::mutate(correct_prediction = (observed == predicted_label)) |>
-  dplyr::ungroup() |>
-  dplyr::summarise(
-    pct_correct = mean(correct_prediction),
-    .by = c("disease", "location_level")
-  )
+
+    population_combined_plot
+
+    ggplot2::ggsave(
+      filename = here::here(plot_output_dir, "score_population.png"),
+      plot = population_combined_plot,
+      width = 16,
+      height = 16
+    )
+
+    # how often was the reported ordinal forecast correct?
+
+    ordinal_ready |>
+      dplyr::filter(model == "ensemble_stack", metric == "admissions") |>
+      dplyr::group_by(prediction_start_date, location, location_level, disease) |>
+      dplyr::slice_max(predicted) |>
+      dplyr::mutate(correct_prediction = (observed == predicted_label)) |>
+      dplyr::ungroup() |>
+      dplyr::summarise(
+        pct_correct = mean(correct_prediction),
+        .by = c("disease", "location_level")
+      )
